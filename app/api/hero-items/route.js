@@ -1,0 +1,81 @@
+import { NextResponse } from "next/server";
+
+export async function GET() {
+  const query = `
+    query GetTopAiringAnimeForHero {
+      Page(page: 1, perPage: 10) {
+        media(type: ANIME, status: RELEASING, sort: POPULARITY_DESC) {
+          id
+          title {
+            romaji
+            english
+          }
+          bannerImage
+          coverImage {
+            color,
+            extraLarge
+          }
+          description(asHtml: false)
+          genres
+          averageScore
+          startDate {
+            year
+          }
+        }
+      }
+    }    
+  `;
+
+  const options = {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify({
+      query: query,
+    }),
+    next: { revalidate: 3600 }
+  }
+
+  try {
+    const response = await fetch('https://graphql.anilist.co', options);
+    const data = await response.json();
+
+    if (!response.ok || data.errors) {
+      console.error('Anilist API error', data.errors);
+      throw new Error("Failed to fetch data from AniList");
+    }
+
+    const allAnime = data.data.Page.media;
+
+    const heroItems = allAnime
+      .filter(anime => anime.bannerImage)
+      .map(anime => {
+        const description = anime.description
+          ? anime.description.replace(/<br\s*\/?>/gi, ' ').substring(0, 180) + '...'
+          : 'No description available.';
+
+        return {
+          id: anime.id,
+          title: anime.title.english || anime.title.romaji,
+          bannerImage: anime.bannerImage,
+          coverImage: anime.coverImage.extraLarge,
+          description: description,
+          genres: anime.genres,
+          year: anime.startDate.year,
+          score: anime.averageScore,
+          color: anime.coverImage.color,
+        };
+      });
+
+    return NextResponse.json(heroItems);
+  }
+  catch (err) {
+    console.error('Error fetching hero items: ', err);
+    return new NextResponse(
+      JSON.stringify({ message: 'Internal Server Error', code: 'hero-item-fail' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+}
