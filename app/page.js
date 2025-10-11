@@ -2,17 +2,25 @@
 
 import { useEffect, useState } from "react"
 import AnimeHero from "@/components/AnimeHero";
+import AnimeHeroSkeleton from "@/components/Skeletons/AnimeHeroSkeleton";
+import { AnimatePresence, motion } from "motion/react";
+import { useToast } from "@/providers/toast-provider";
 
 export default function Home() {
+  const { toast } = useToast();
+
   const [animeData, setAnimeData] = useState([]);
+  const [heroLoading, setHeroLoading] = useState(true);
 
   useEffect(() => {
     const getHeroItems = async () => {
+      setHeroLoading(true);
       try {
         const res = await fetch('/api/hero-items');
         const data = await res.json();
         console.log(data);
         setAnimeData(data);
+        setHeroLoading(false);
       }
       catch (err) {
         console.error(err);
@@ -21,40 +29,30 @@ export default function Home() {
     getHeroItems();
   }, []);
 
-  const animeList = [
-    {
-      bannerImage: 'https://s4.anilist.co/file/anilistcdn/media/anime/banner/181447-t1JZ4Yy2kv94.jpg',
-      coverImage: 'https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx181447-aCmaQmtdwuU5.jpg',
-      title: 'May I Ask for One Final Thing?-1',
-      score: '8.5',
-      genres: ['Action', 'Fantasy', 'Comedy'],
-      status: 'Airing',
-      description: 'Scarlet, a duke\'s daughter, was known as the "Ice Princess" until a sudden betrayal by her fiancé, the prince. Condemned and broken, she unleashes a hidden, violent side of herself, vowing to get the last laugh... and one final thing.'
-    },
-    {
-      bannerImage: 'https://s4.anilist.co/file/anilistcdn/media/anime/banner/181447-t1JZ4Yy2kv94.jpg',
-      coverImage: 'https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx181447-aCmaQmtdwuU5.jpg',
-      title: 'May I Ask for One Final Thing?-2',
-      score: '8.5',
-      genres: ['Action', 'Fantasy', 'Comedy'],
-      status: 'Airing',
-      description: 'Scarlet, a duke\'s daughter, was known as the "Ice Princess" until a sudden betrayal by her fiancé, the prince. Condemned and broken, she unleashes a hidden, violent side of herself, vowing to get the last laugh... and one final thing.'
-    },
-    {
-      bannerImage: 'https://s4.anilist.co/file/anilistcdn/media/anime/banner/181447-t1JZ4Yy2kv94.jpg',
-      coverImage: 'https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx181447-aCmaQmtdwuU5.jpg',
-      title: 'May I Ask for One Final Thing?-3',
-      score: '8.5',
-      genres: ['Action', 'Fantasy', 'Comedy'],
-      status: 'Airing',
-      description: 'Scarlet, a duke\'s daughter, was known as the "Ice Princess" until a sudden betrayal by her fiancé, the prince. Condemned and broken, she unleashes a hidden, violent side of herself, vowing to get the last laugh... and one final thing.'
-    },
-    // Add more anime objects here for scrolling
-  ];
-
   return (
     <div className="relative w-screen min-h-screen flex flex-col z-0">
-      <AnimeHero animeList={animeData} />
+      <AnimatePresence mode="wait">
+        {heroLoading ? (
+          <motion.div
+            key="skeleton"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3 }}
+          >
+            <AnimeHeroSkeleton />
+          </motion.div>
+        ) : (
+          <motion.div
+            key="hero"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, ease: "easeOut" }}
+          >
+            <AnimeHero animeList={animeData} />
+          </motion.div>
+        )}
+      </AnimatePresence>
       <section className="min-h-screen mt-10"></section>
     </div>
   )
