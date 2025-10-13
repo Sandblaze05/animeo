@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+export const revalidate = 3600;
+
 export async function GET() {
   const query = `
     query GetTopAiringAnimeForHero {
@@ -35,7 +37,6 @@ export async function GET() {
     body: JSON.stringify({
       query: query,
     }),
-    next: { revalidate: 3600 }
   }
 
   try {
@@ -69,7 +70,11 @@ export async function GET() {
         };
       });
 
-    return NextResponse.json(heroItems);
+    return NextResponse.json(heroItems, {
+      headers: {
+        'Cache-Control': 'public, max-age=3600, stale-while-revalidate=60'
+      }
+    });
   }
   catch (err) {
     console.error('Error fetching hero items: ', err);

@@ -1,40 +1,91 @@
 import { useState, useEffect, useRef } from 'react';
 import Image from "next/image";
-import { StarIcon, PlayIcon, PlusIcon } from "lucide-react";
+import { PlayIcon, PlusIcon } from "lucide-react";
 import { motion } from 'motion/react';
 import { useToast } from '@/providers/toast-provider';
+import ParallaxCoverImage from './ParallaxCoverImage';
 
 export default function AnimeHero({ animeList }) {
   const { toast } = useToast();
 
   const [activeIndex, setActiveIndex] = useState(0);
+  const [isUserInteracting, setIsUserInteracting] = useState(false);
 
   const scrollContainerRef = useRef(null);
+  const interactionTimeoutRef = useRef(null);
+  const scrollTimeoutRef = useRef(null)
+  const slidesToDisplay = animeList.slice(0, 7);
 
   useEffect(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
+    if (slidesToDisplay.length <= 1 || isUserInteracting) return;
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            const index = parseInt(entry.target.dataset.index, 10);
-            setActiveIndex(index);
-          }
-        });
-      },
-      {
-        root: container,
-        threshold: 0.5,
+    const timer = setInterval(() => {
+      setActiveIndex((prevIndex) => (prevIndex + 1) % slidesToDisplay.length);
+    }, 5000);
+
+    return () => clearInterval(timer);
+  }, [slidesToDisplay.length, isUserInteracting]); 
+
+  useEffect(() => {
+    if (isUserInteracting) return;
+
+    const slideElement = scrollContainerRef.current?.querySelector(`section[data-index='${activeIndex}']`);
+    
+    if (slideElement) {
+      slideElement.scrollIntoView({
+        behavior: 'smooth',
+        inline: 'start',
+        block: 'nearest',
+      });
+    }
+  }, [activeIndex, isUserInteracting]);
+
+  const handleUserInteraction = () => {
+    if(!isUserInteracting) setIsUserInteracting(true);
+
+    if (interactionTimeoutRef.current) {
+      clearTimeout(interactionTimeoutRef.current);
+    }
+
+    interactionTimeoutRef.current = setTimeout(() => {
+      setIsUserInteracting(false);
+    }, 5000);
+  }
+
+  const handleScroll = () => {
+    handleUserInteraction();
+
+    if (scrollTimeoutRef.current) {
+      clearTimeout(scrollTimeoutRef.current);
+    }
+
+    scrollTimeoutRef.current = setTimeout(() => {
+      if (!scrollContainerRef.current) return;
+
+      const { scrollLeft, clientWidth } = scrollContainerRef.current;
+      const newIndex = Math.round(scrollLeft / clientWidth);
+
+      if (newIndex !== activeIndex) {
+        setActiveIndex(newIndex);
       }
-    );
+    }, 150);
+  }
 
-    const slides = container.querySelectorAll('section');
-    slides.forEach((slide) => observer.observe(slide));
+  const handleDotClick = (index) => {
+    setActiveIndex(index);
+    handleUserInteraction();
+  }
 
-    return () => observer.disconnect();
-  }, [animeList]);
+  useEffect(() => {
+    return () => {
+      if (interactionTimeoutRef.current) {
+        clearTimeout(interactionTimeoutRef.current);
+      }
+      if (scrollTimeoutRef.current) {
+        clearTimeout(scrollTimeoutRef.current);
+      }
+    }
+  }, []);
 
   const buttonVariants = {
     initial: { gap: "0px" },
@@ -58,6 +109,9 @@ export default function AnimeHero({ animeList }) {
     <div className="relative w-full h-[60svh] md:h-[50svh] overflow-visible">
       <div
         ref={scrollContainerRef}
+        onScroll={handleScroll}
+        onMouseEnter={handleUserInteraction}
+        onTouchStart={handleUserInteraction}
         className="overflow-x-auto snap-x snap-mandatory scrollbar-hide h-full"
       >
         <div className="flex h-full">
@@ -85,29 +139,9 @@ export default function AnimeHero({ animeList }) {
               />
               <div className="absolute inset-0 bg-gradient-to-t from-[rgb(11,0,31)]/90 via-[rgb(11,0,31)]/50 to-transparent" />
               <div className="relative h-full flex items-end p-4 sm:p-8 md:p-12 overflow-visible">
-                <div className="w-full flex flex-col md:flex-row items-center md:items-end gap-6">
+                <div className="w-full flex flex-col md:flex-row items-center md:items-end gap-6 [perspective:1000px]">
                   {/* COVER IMAGE */}
-                  <motion.div
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    transition={{ ease: "linear" }}
-                    className="hidden md:block flex-shrink-0 w-56 -mb-4"
-                  >
-                    <div
-                      className="relative aspect-[2/3] rounded-xl overflow-hidden shadow-lg hover:[box-shadow:0px_0px_200px_#e60076b3] transition-shadow duration-900 delay-100"
-                    >
-                      <Image
-                        src={animeData.coverImage}
-                        alt={`${animeData.title} cover`}
-                        className="object-cover"
-                        fill
-                      />
-                      <div className="absolute bottom-0 left-0 flex items-center justify-center gap-1 w-full p-1 bg-black/50 backdrop-blur-sm text-sm font-bold">
-                        <StarIcon className="w-4 h-4 text-amber-400 fill-current" />
-                        <span>{animeData.score}</span>
-                      </div>
-                    </div>
-                  </motion.div>
+                  <ParallaxCoverImage animeData={animeData} />
                   {/* TEXT & ACTION CONTENT */}
                   <div className="flex flex-col items-center md:items-start gap-4 text-center md:text-left">
                     <h1 className="text-5xl font-extrabold tracking-tighter text-balance max-w-[300px] md:max-w-none">
@@ -178,14 +212,16 @@ export default function AnimeHero({ animeList }) {
       </div>
 
       {/* PAGINATION DOTS */}
-      {animeList.length > 1 && (
+      {slidesToDisplay.length > 1 && (
         <div className="absolute -bottom-4 md:bottom-4 left-1/2 -translate-x-1/2 flex gap-2 z-10">
-          {animeList.map((_, i) => (
+          {slidesToDisplay.map((_, i) => (
             <div
               key={i}
+              aria-label={`Go to slide ${i + 1}`}
+              onClick={() => handleDotClick(i)}
               className={
                 `h-2 rounded-full backdrop-blur-md transition-all duration-300 ${i === activeIndex ? 'w-8 bg-pink-500/70' : 'w-2 bg-white/40'
-              }`}
+                }`}
             />
           ))}
         </div>

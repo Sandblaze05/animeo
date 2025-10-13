@@ -25,9 +25,9 @@ const Toast = ({ id, message, type, onClose, duration = 5000 }) => {
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, y: 50, scale: 0.3 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: 20, scale: 0.5 }}
+      initial={{ opacity: 0, x: 50, scale: 0.95 }}
+      animate={{ opacity: 1, x: 0, scale: 1 }}
+      exit={{ opacity: 0, x: 40, scale: 0.95 }}
       transition={{ duration: 0.3 }}
       className="mb-2 flex w-full max-w-sm items-start gap-3 rounded-lg bg-neutral-800/60 backdrop-blur-md border-1 border-gray-400/50 p-4 text-white shadow-lg"
     >

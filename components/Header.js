@@ -84,7 +84,7 @@ const Header = () => {
 
     const headerTimeline = gsap.timeline({ paused: true });
     headerTimeline.to(header, {
-      width: "32svw",
+      width: "517px",
       ease: "power2.inOut",
       duration: 0.4
     })
@@ -131,7 +131,7 @@ const Header = () => {
   return (
     <header
       ref={headerRef}
-      className="fixed top-5 left-1/2 -translate-x-1/2 overflow-hidden hidden w-[30svw] h-10 border-[1px] border-white/20 backdrop-blur-lg bg-black/20 sm:flex justify-between gap-3 items-center rounded-full shadow-2xl p-1 font-semibold z-[9999]"
+      className="fixed top-5 left-1/2 -translate-x-1/2 overflow-hidden hidden w-[456px] h-10 border-[1px] border-white/20 backdrop-blur-lg bg-black/20 sm:flex justify-between gap-3 items-center rounded-full shadow-2xl p-1 font-semibold z-[9999]"
     >
 
       <div ref={activePillRef} className="absolute left-0 h-[calc(100%-0.5rem)] w-0 bg-white/40 rounded-full opacity-0 -z-10"></div>
