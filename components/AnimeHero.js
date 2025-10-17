@@ -31,11 +31,13 @@ export default function AnimeHero({ animeList }) {
 
     const slideElement = scrollContainerRef.current?.querySelector(`section[data-index='${activeIndex}']`);
     
-    if (slideElement) {
-      slideElement.scrollIntoView({
-        behavior: 'smooth',
-        inline: 'start',
-        block: 'nearest',
+    if (slideElement && scrollContainerRef.current) {
+      const container = scrollContainerRef.current;
+      const slideWidth = slideElement.offsetWidth;
+      
+      container.scrollTo({
+        left: activeIndex * slideWidth,
+        behavior: 'smooth'
       });
     }
   }, [activeIndex, isUserInteracting]);
@@ -73,7 +75,7 @@ export default function AnimeHero({ animeList }) {
 
   const handleDotClick = (index) => {
     setActiveIndex(index);
-    handleUserInteraction();
+    // handleUserInteraction();
   }
 
   useEffect(() => {

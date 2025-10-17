@@ -5,11 +5,14 @@ import AnimeHero from "@/components/AnimeHero";
 import AnimeHeroSkeleton from "@/components/Skeletons/AnimeHeroSkeleton";
 import { AnimatePresence, motion } from "motion/react";
 import { useToast } from "@/providers/toast-provider";
+import TopAnime from "@/components/TopAnime";
+import CurrentSeason from "@/components/CurrentSeason";
 
 export default function Home() {
   const { toast } = useToast();
 
   const [animeData, setAnimeData] = useState([]);
+  const [allAnimeData, setAllAnimeData] = useState({});
   const [heroLoading, setHeroLoading] = useState(true);
 
   useEffect(() => {
@@ -17,16 +20,45 @@ export default function Home() {
       setHeroLoading(true);
       try {
         const res = await fetch('/api/hero-items');
+
+        if (!res.ok) {
+          const errData = await res.json();
+          toast(`${res.status}: ${errData.message || 'Failed to fetch data.'}`, 'error');
+          return;
+        }
+
         const data = await res.json();
         console.log(data);
+
         setAnimeData(data);
         setHeroLoading(false);
       }
       catch (err) {
-        console.error(err);
+        toast(`An error occured: ${err}`, "error");
+      }
+    }
+
+    const getAllData = async () => {
+      try {
+        const res = await fetch('/api/all-anime-data');
+
+        if (!res.ok) {
+          const errData = await res.json();
+          toast(`${res.status}: ${errData.message || 'Failed to fetch data.'}`, 'error');
+          return;
+        }
+
+        const data = await res.json();
+        setAllAnimeData(data);
+        console.log("All data: ", data);
+
+      }
+      catch (err) {
+        toast(`An error occured: ${err}`, 'error');
       }
     }
     getHeroItems();
+    getAllData();
   }, []);
 
   return (
@@ -53,7 +85,13 @@ export default function Home() {
           </motion.div>
         )}
       </AnimatePresence>
-      <section className="min-h-screen mt-10"></section>
+      <section className="min-h-screen w-screen p-4 text-white">
+        {
+          allAnimeData.topAiring === undefined
+          ? <h1>Loading</h1> 
+          : <CurrentSeason topAnime={allAnimeData.currentSeason} />
+        }
+      </section>
     </div>
   )
 }
