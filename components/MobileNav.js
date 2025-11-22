@@ -1,6 +1,6 @@
 'use client'
 
-import { Clapperboard, Flame, Home, Tv } from "lucide-react"
+import { Clapperboard, Flame, Home, Tv, NewspaperIcon } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useLayoutEffect, useRef } from "react"
@@ -10,7 +10,7 @@ const navItems = [
   { name: 'Home', href: '/', icon: Home },
   { name: 'Movies', href: '/movies', icon: Clapperboard },
   { name: 'TV', href: '/tv', icon: Tv },
-  { name: 'Top', href: '/top', icon: Flame },
+  { name: 'News', href: '/news', icon: NewspaperIcon },
 ]
 
 const MobileNav = () => {

@@ -27,8 +27,8 @@ const Header = () => {
       case '/tv':
         selected = 'TV';
         break;
-      case '/top':
-        selected = 'Top';
+      case '/news':
+        selected = 'News';
         break;
       default:
         selected = 'Home';
@@ -144,7 +144,7 @@ const Header = () => {
       <div className="search absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex justify-center items-center text-white rounded-2xl px-3 py-1 flex-1"><SearchIcon /></div>
 
       <Link className="nav-link flex-1 text-center font-poppins text-sm px-5 py-1 rounded-full text-gray-200 cursor-pointer" href='/tv'>TV</Link>
-      <Link className="nav-link flex-1 text-center font-poppins text-sm px-5 py-1 rounded-full text-gray-200 cursor-pointer" href='/top'>Top</Link>
+      <Link className="nav-link flex-1 text-center font-poppins text-sm px-5 py-1 rounded-full text-gray-200 cursor-pointer" href='/news'>News</Link>
     </header>
   )
 }

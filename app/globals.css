@@ -132,6 +132,7 @@ body {
 
 ::selection {
   background-color: #e60076;
+  color: #fff;
 }
 
 @layer utilities {

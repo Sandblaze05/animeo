@@ -89,7 +89,7 @@ export default function Home() {
         {
           allAnimeData.topAiring === undefined
           ? <h1>Loading</h1> 
-          : <CurrentSeason topAnime={allAnimeData.currentSeason} />
+          : <CurrentSeason currentSeason={allAnimeData.currentSeason} />
         }
       </section>
     </div>
