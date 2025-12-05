@@ -146,7 +146,7 @@ export default function AnimeHero({ animeList }) {
                   <ParallaxCoverImage animeData={animeData} />
                   {/* TEXT & ACTION CONTENT */}
                   <div className="flex flex-col items-center md:items-start gap-4 text-center md:text-left">
-                    <h1 className="text-5xl font-extrabold tracking-tighter text-balance max-w-[300px] md:max-w-none">
+                    <h1 className="text-5xl font-extrabold tracking-tighter text-balance max-w-[300px] md:max-w-[70svw] line-clamp-2">
                       {animeData.title}
                     </h1>
                     <div className="flex flex-wrap justify-center md:justify-start items-center gap-2 text-sm">
