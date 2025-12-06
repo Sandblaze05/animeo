@@ -72,7 +72,9 @@ export async function GET() {
       title: anime.title_english,
       type: anime.type,
       airing: anime.airing,
-      score: anime.score
+      score: anime.score,
+      year: anime.year,
+      season: anime.season
     }))
 
     return NextResponse.json({ topAiring, currentSeason });

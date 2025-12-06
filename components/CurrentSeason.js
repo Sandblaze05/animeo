@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
 import Image from 'next/image'
 import { X } from 'lucide-react';
 import { AnimatePresence, hover, motion } from 'motion/react';
@@ -15,6 +15,26 @@ const CurrentSeason = ({ currentSeason }) => {
 
   const [hoveredIndex, setHoveredIndex] = useState(null);
   const [popupAnime, setPopupAnime] = useState(null);
+  const [flyCardPosition, setFlyCardPosition] = useState('right');
+  const cardRefs = useRef([]);
+
+  const handleMouseEnter = (idx) => {
+    setHoveredIndex(idx);
+    
+    // Check if the fly card would go out of bounds
+    if (cardRefs.current[idx]) {
+      const rect = cardRefs.current[idx].getBoundingClientRect();
+      const viewportWidth = window.innerWidth;
+      const flyCardWidth = 228; // w-57 = 14.25rem = ~228px
+      
+      // If the right edge of the card + fly card width exceeds viewport, show on left
+      if (rect.right + flyCardWidth + 20 > viewportWidth) {
+        setFlyCardPosition('left');
+      } else {
+        setFlyCardPosition('right');
+      }
+    }
+  };
 
   return (
     <div className='flex relative w-full min-h-[50svh] mt-10 md:mt-0 border-t-1 border-b-1 border-pink-500'>
@@ -26,12 +46,13 @@ const CurrentSeason = ({ currentSeason }) => {
         <h1>{"Current Airing"}</h1>
       </div>
 
-      <div className='flex items-center justify-start px-10 min-w-full overflow-x-auto overflow-y-hidden mt-14 scrollbar-hide scroll-smooth'>
+      <div className='flex items-center justify-start px-10 py-5 min-w-full overflow-x-auto overflow-y-hidden mt-14 scrollbar-hide scroll-smooth'>
         <div className='flex gap-15'>
           {currentSeason.map((anime, idx) => (
             <div
               key={idx}
-              onMouseEnter={() => setHoveredIndex(idx)}
+              ref={(el) => (cardRefs.current[idx] = el)}
+              onMouseEnter={() => handleMouseEnter(idx)}
               onMouseLeave={() => setHoveredIndex(null)}
               onClick={() => setPopupAnime(anime)}
               className='flex relative h-73 w-53 transition-all duration-[800ms] z-10'
@@ -51,9 +72,9 @@ const CurrentSeason = ({ currentSeason }) => {
               <AnimatePresence>
                 {hoveredIndex === idx && 
                   <div 
-                    className='absolute left-52 top-2 z-1'
+                    className={`absolute top-2 z-1 ${flyCardPosition === 'left' ? 'right-52' : 'left-52'}`}
                   >
-                    <SeasonFlyCard anime={anime} color={colorMap[(idx % 4)]} />
+                    <SeasonFlyCard anime={anime} color={colorMap[(idx % 4)]} isOnLeft={flyCardPosition === 'left'} />
                   </div>
                 }
               </AnimatePresence>

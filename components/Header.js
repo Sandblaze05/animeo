@@ -1,7 +1,7 @@
 'use client'
 
 import gsap from "gsap"
-import { SearchIcon } from "lucide-react"
+import { SearchIcon, User2Icon } from "lucide-react"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
@@ -129,23 +129,35 @@ const Header = () => {
   }, []);
 
   return (
-    <header
-      ref={headerRef}
-      className="fixed top-5 left-1/2 -translate-x-1/2 overflow-hidden hidden w-[456px] h-10 border-[1px] border-white/20 backdrop-blur-lg bg-black/20 sm:flex justify-between gap-3 items-center rounded-full shadow-2xl p-1 font-semibold z-[9999]"
-    >
+    <div className="w-screen z-9000 hidden sm:flex">
+      <div aria-label="menu" className="fixed left-7 top-5 p-2 h-12 w-12 flex items-center justify-center rounded-full bg-black/20 border-white/20 border-1 shadow-2xl backdrop-blur-lg">
+        <svg width="30px" height="30px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 18H10" stroke="#FFF" strokeWidth="2" strokeLinecap="round" />
+          <path d="M4 12L16 12" stroke="#FFF" strokeWidth="2" strokeLinecap="round" />
+          <path d="M4 6L20 6" stroke="#FFF" strokeWidth="2" strokeLinecap="round" />
+        </svg>
+      </div>
+      <div aria-label="profile" className="fixed right-7 top-5 h-12 w-12 flex items-center justify-center rounded-full bg-black/20 border-white/20 border-1 shadow-2xl backdrop-blur-lg">
+        <User2Icon className="text-white fill-white" />
+      </div>
+      <header
+        ref={headerRef}
+        className="fixed top-5 left-1/2 -translate-x-1/2 overflow-hidden hidden w-[456px] h-10 border-[1px] border-white/20 backdrop-blur-lg bg-black/20 sm:flex justify-between gap-3 items-center rounded-full shadow-2xl p-1 font-semibold z-[9999]"
+      >
 
-      <div ref={activePillRef} className="absolute left-0 h-[calc(100%-0.5rem)] w-0 bg-white/40 rounded-full opacity-0 -z-10"></div>
-      <div ref={selectedPillRef} className="absolute left-0 h-[calc(100%-0.5rem)] w-0 bg-white/90 rounded-full opacity-0 -z-10"></div>
+        <div ref={activePillRef} className="absolute left-0 h-[calc(100%-0.5rem)] w-0 bg-white/40 rounded-full opacity-0 -z-10"></div>
+        <div ref={selectedPillRef} className="absolute left-0 h-[calc(100%-0.5rem)] w-0 bg-white/90 rounded-full opacity-0 -z-10"></div>
 
-      <Link className="nav-link flex-1 text-center font-poppins text-sm px-5 py-1 rounded-full text-gray-200 cursor-pointer" href='/'>Home</Link>
-      <Link className="nav-link flex-1 text-center font-poppins text-sm px-5 py-1 rounded-full text-gray-200 cursor-pointer" href='/movies'>Movies</Link>
+        <Link className="nav-link flex-1 text-center font-poppins text-sm px-5 py-1 rounded-full text-gray-200 cursor-pointer" href='/'>Home</Link>
+        <Link className="nav-link flex-1 text-center font-poppins text-sm px-5 py-1 rounded-full text-gray-200 cursor-pointer" href='/movies'>Movies</Link>
 
-      <div className="opacity-0 flex justify-center items-center text-white rounded-2xl px-3 py-1 flex-1"></div>
-      <div className="search absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex justify-center items-center text-white rounded-2xl px-3 py-1 flex-1"><SearchIcon /></div>
+        <div className="opacity-0 flex justify-center items-center text-white rounded-2xl px-3 py-1 flex-1"></div>
+        <div className="search absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex justify-center items-center text-white rounded-2xl px-3 py-1 flex-1"><SearchIcon /></div>
 
-      <Link className="nav-link flex-1 text-center font-poppins text-sm px-5 py-1 rounded-full text-gray-200 cursor-pointer" href='/tv'>TV</Link>
-      <Link className="nav-link flex-1 text-center font-poppins text-sm px-5 py-1 rounded-full text-gray-200 cursor-pointer" href='/news'>News</Link>
-    </header>
+        <Link className="nav-link flex-1 text-center font-poppins text-sm px-5 py-1 rounded-full text-gray-200 cursor-pointer" href='/tv'>TV</Link>
+        <Link className="nav-link flex-1 text-center font-poppins text-sm px-5 py-1 rounded-full text-gray-200 cursor-pointer" href='/news'>News</Link>
+      </header>
+    </div>
   )
 }
 
