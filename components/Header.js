@@ -100,6 +100,8 @@ const Header = () => {
       }, '<');
 
     const handleKeyDown = (e) => {
+      if (isSearchOpen) return;
+
       if (e.ctrlKey && e.key === 's') {
         e.preventDefault();
         console.log('open search');
@@ -114,6 +116,8 @@ const Header = () => {
     };
 
     const handleKeyUp = (e) => {
+      if (isSearchOpen) return;
+
       if (e.key === 'Control') {
         e.preventDefault();
         headerTimeline.reverse();
@@ -183,14 +187,14 @@ const Header = () => {
         <Link className="nav-link flex-1 text-center font-poppins text-sm px-5 py-1 rounded-full text-gray-200 cursor-pointer" href='/movies'>Movies</Link>
 
         <div className="opacity-0 flex justify-center items-center text-white rounded-2xl px-3 py-1 flex-1"></div>
-        <div className="search absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex justify-center items-center text-white rounded-2xl px-3 py-1 flex-1"><SearchIcon /></div>
+        <div onClick={() => setIsSearchOpen(prev => !prev)} className="search absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex justify-center items-center text-white rounded-2xl px-3 py-1 flex-1"><SearchIcon /></div>
 
         <Link className="nav-link flex-1 text-center font-poppins text-sm px-5 py-1 rounded-full text-gray-200 cursor-pointer" href='/tv'>TV</Link>
         <Link className="nav-link flex-1 text-center font-poppins text-sm px-5 py-1 rounded-full text-gray-200 cursor-pointer" href='/news'>News</Link>
       </header>
 
       {isSearchOpen && (
-        <SearchBox />
+        <SearchBox onClose={() => setIsSearchOpen(false)} />
       )}
     </div>
   )
