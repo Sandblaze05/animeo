@@ -1,6 +1,6 @@
 'use client'
 
-import { Clapperboard, Flame, Home, Tv, NewspaperIcon, User2Icon } from "lucide-react"
+import { Clapperboard, Flame, Home, Tv, NewspaperIcon, User2Icon, SearchIcon } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useLayoutEffect, useRef } from "react"
@@ -24,7 +24,7 @@ const MobileNav = () => {
     if (!nav || !activePill) return;
 
     const targetLink = nav.querySelector(`a[href='${pathname}']`);
-    
+
     if (targetLink) {
       gsap.to(activePill, {
         x: targetLink.offsetLeft,
@@ -46,8 +46,15 @@ const MobileNav = () => {
           <path d="M4 6L20 6" stroke="#FFF" strokeWidth="2" strokeLinecap="round" />
         </svg>
       </div>
-      <div aria-label="profile" className="fixed right-5 top-5 h-12 w-12 flex items-center justify-center rounded-full bg-black/20 border-white/20 border-1 shadow-2xl backdrop-blur-lg">
-        <User2Icon className="text-white fill-white" />
+      <div aria-label="profile" className="fixed right-5 top-5 gap-1 flex items-center justify-between ">
+        <div className="flex cursor-pointer px-3 gap-3 items-center justify-start text-white w-[30svw] h-10 rounded-full border-1 border-white/20 bg-black/20 backdrop-blur-lg overflow-clip">
+          <SearchIcon className="text-white/50 w-5 h-5" />
+          <span className="text-white/50 text-xs">Search</span>
+        </div>
+
+        <div className="h-12 w-12 flex justify-center items-center rounded-full bg-black/20 border-white/20 border-1 shadow-2xl backdrop-blur-lg">
+          <User2Icon className="text-white fill-white" />
+        </div>
       </div>
       <footer
         ref={navRef}
