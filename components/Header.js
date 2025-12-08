@@ -5,14 +5,19 @@ import { SearchIcon, User2Icon } from "lucide-react"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
+import SearchBox from "./SearchBox"
 
 const Header = () => {
   const headerRef = useRef(null);
   const activePillRef = useRef(null);
   const selectedPillRef = useRef(null);
   const previousLinkRef = useRef(null);
-  const [selected, setSelected] = useState('Home');
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const pathname = usePathname();
+
+  const handleSearchHotKey = () => {
+
+  }
 
   // This effect handles the selection animation
   useLayoutEffect(() => {
@@ -94,10 +99,34 @@ const Header = () => {
         duration: 0.4
       }, '<');
 
+    const handleKeyDown = (e) => {
+      if (e.ctrlKey && e.key === 's') {
+        e.preventDefault();
+        console.log('open search');
+        setIsSearchOpen(prev => !prev);
+        return;
+      }
+
+      if (e.key === 'Control') {
+        e.preventDefault();
+        headerTimeline.play();
+      }
+    };
+
+    const handleKeyUp = (e) => {
+      if (e.key === 'Control') {
+        e.preventDefault();
+        headerTimeline.reverse();
+      }
+    };
+
     const playAnimation = () => headerTimeline.play();
     const reverseAnimation = () => headerTimeline.reverse();
     header.addEventListener("mouseenter", playAnimation);
     header.addEventListener("mouseleave", reverseAnimation);
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
 
     navLinks.forEach((link) => {
       link.addEventListener("mouseenter", () => {
@@ -121,6 +150,8 @@ const Header = () => {
     header.addEventListener("mouseleave", hidePill);
 
     return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
       header.removeEventListener("mouseenter", playAnimation);
       header.removeEventListener("mouseleave", reverseAnimation);
       header.removeEventListener("mouseleave", hidePill);
@@ -157,6 +188,10 @@ const Header = () => {
         <Link className="nav-link flex-1 text-center font-poppins text-sm px-5 py-1 rounded-full text-gray-200 cursor-pointer" href='/tv'>TV</Link>
         <Link className="nav-link flex-1 text-center font-poppins text-sm px-5 py-1 rounded-full text-gray-200 cursor-pointer" href='/news'>News</Link>
       </header>
+
+      {isSearchOpen && (
+        <SearchBox />
+      )}
     </div>
   )
 }

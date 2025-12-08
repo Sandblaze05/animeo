@@ -7,6 +7,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useToast } from "@/providers/toast-provider";
 import TopAnime from "@/components/TopAnime";
 import CurrentSeason from "@/components/CurrentSeason";
+import CurrentSeasonSkeleton from "@/components/Skeletons/CurrentSeasonSkeleton";
 
 export default function Home() {
   const { toast } = useToast();
@@ -86,11 +87,30 @@ export default function Home() {
         )}
       </AnimatePresence>
       <section className="min-h-screen w-screen p-4 text-white">
-        {
-          allAnimeData.topAiring === undefined
-          ? <h1>Loading</h1> 
-          : <CurrentSeason currentSeason={allAnimeData.currentSeason} />
-        }
+        <AnimatePresence mode="wait">
+          {
+            allAnimeData.topAiring === undefined
+              ? (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.3 }}
+                >
+                  <CurrentSeasonSkeleton />
+                </motion.div>
+              )
+              : (
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.5, ease: "easeOut" }}
+                >
+                  <CurrentSeason currentSeason={allAnimeData.currentSeason} />
+                </motion.div>
+              )
+          }
+        </AnimatePresence>
       </section>
     </div>
   )
