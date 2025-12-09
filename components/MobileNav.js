@@ -3,8 +3,11 @@
 import { Clapperboard, Flame, Home, Tv, NewspaperIcon, User2Icon, SearchIcon } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { useLayoutEffect, useRef } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { motion, AnimatePresence } from 'motion/react';
 import gsap from "gsap"
+import Image from "next/image"
+import { useToast } from "@/providers/toast-provider"
 
 const navItems = [
   { name: 'Home', href: '/', icon: Home },
@@ -13,10 +16,80 @@ const navItems = [
   { name: 'News', href: '/news', icon: NewspaperIcon },
 ]
 
+const formatDuration = (s = '') => {
+  const hr = /(\d+)\s*h(?:r|ours?)?/i.exec(s);
+  const min = /(\d+)\s*m(?:in(?:utes)?)?/i.exec(s);
+  const parts = [];
+  if (hr) parts.push(`${hr[1]}h`);
+  if (min) parts.push(`${min[1]}m`);
+  return parts.join(' ');
+};
+
 const MobileNav = () => {
   const pathname = usePathname();
   const navRef = useRef(null);
   const selectedPillRef = useRef(null);
+  const inputRef = useRef(null);
+  const searchBoxRef = useRef(null);
+  const tl = useRef(null);
+  const { toast } = useToast();
+
+  const [inputFocus, setInputFocus] = useState(false);
+  const [query, setQuery] = useState('');
+  const [suggestionData, setSuggestionData] = useState(null);
+  const [suggestionLoading, setSuggestionLoading] = useState(false);
+
+  const fetchQuery = async (query) => {
+    setSuggestionLoading(true);
+    try {
+      const response = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(query)}&limit=5`);
+      if (!response.ok) {
+        toast('Error in search', 'error');
+        return;
+      }
+      const data = await response.json();
+      setSuggestionData(data.data);
+    } catch (err) {
+      toast(`${err.message}`, 'error');
+      setSuggestionData([]);
+    } finally {
+      setSuggestionLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!query || query.trim().length === 0) {
+        setSuggestionData(null);
+        return;
+    }
+
+    const timer = setTimeout(() => {
+      fetchQuery(query);
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  useLayoutEffect(() => {
+    const ctx = gsap.context(() => {
+      tl.current = gsap.timeline({ paused: true })
+        .to(searchBoxRef.current, {
+          width: '65svw',
+          duration: 0.4,
+          ease: 'power2.inOut'
+        });
+    }, searchBoxRef);
+
+    return () => ctx.revert();
+  }, []);
+
+  useEffect(() => {
+    if (inputFocus) {
+      tl.current?.play();
+    } else {
+      tl.current?.reverse();
+    }
+  }, [inputFocus]);
 
   useLayoutEffect(() => {
     const nav = navRef.current;
@@ -46,15 +119,55 @@ const MobileNav = () => {
           <path d="M4 6L20 6" stroke="#FFF" strokeWidth="2" strokeLinecap="round" />
         </svg>
       </div>
-      <div aria-label="profile" className="fixed right-5 top-5 gap-1 flex items-center justify-between ">
-        <div className="flex cursor-pointer px-3 gap-3 items-center justify-start text-white w-[30svw] h-10 rounded-full border-1 border-white/20 bg-black/20 backdrop-blur-lg overflow-clip">
-          <SearchIcon className="text-white/50 w-5 h-5" />
-          <span className="text-white/50 text-xs">Search</span>
-        </div>
+      <div className="fixed right-5 top-5 gap-1 flex items-center justify-between ">
+        <motion.div 
+          whileTap={{ scale: 0.95, y: 0.5 }}
+          ref={searchBoxRef}
+          onClick={() => inputRef.current?.focus()}
+          className="flex cursor-pointer px-3 gap-3 items-center justify-start text-white w-[35svw] h-12 rounded-full border-1 border-white/20 bg-black/20 backdrop-blur-lg overflow-clip"
+        >
+          <SearchIcon className="text-white/70 w-5 h-5" />
+          <input 
+            ref={inputRef}  
+            onFocus={() => setInputFocus(true)}
+            onBlur={() => setTimeout(() => setInputFocus(false), 200)}
+            onChange={(e) => setQuery(e.target.value)}
+            value={query}
+            type="text" 
+            placeholder="Search..." 
+            className="flex-1 w-[10svw] h-full ring-0 outline-0 text-xs" 
+          />
+        </motion.div>
 
-        <div className="h-12 w-12 flex justify-center items-center rounded-full bg-black/20 border-white/20 border-1 shadow-2xl backdrop-blur-lg">
+        <div aria-label="profile" className="h-12 w-12 flex justify-center items-center rounded-full bg-black/20 border-white/20 border-1 shadow-2xl backdrop-blur-lg">
           <User2Icon className="text-white fill-white" />
         </div>
+
+        <AnimatePresence>
+          {inputFocus && suggestionData && suggestionData.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: -20, height: 0 }}
+              animate={{ opacity: 1, y: 0, height: 'auto' }}
+              exit={{ opacity: 0, y: -20, height: 0 }}
+              transition={{ duration: 0.3, ease: "easeInOut" }}
+              className="fixed top-18 left-1/2 -translate-x-1/2 w-[80svw] bg-black/60 backdrop-blur-xl rounded-2xl border border-white/20 overflow-hidden shadow-2xl flex flex-col z-50"
+            >
+              {suggestionData.map((anime, idx) => (
+                <div key={idx} className="flex items-center gap-3 p-3 border-b border-white/20 last:border-none hover:bg-white/10 transition-colors cursor-pointer">
+                  <div className="h-12 w-12 relative shrink-0 rounded-md overflow-hidden bg-white/10">
+                    <Image src={anime.images.webp.small_image_url} alt={anime.title} fill className="object-cover" />
+                  </div>
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-sm text-white truncate font-medium">{anime.title}</span>
+                    <span className="text-xs text-white/50 truncate">
+                      {anime.type} • {anime.year || 'N/A'} • {formatDuration(anime.duration)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
       <footer
         ref={navRef}

@@ -14,7 +14,6 @@ const colorMap = {
 const CurrentSeason = ({ currentSeason }) => {
 
   const [hoveredIndex, setHoveredIndex] = useState(null);
-  const [popupAnime, setPopupAnime] = useState(null);
   const [flyCardPosition, setFlyCardPosition] = useState('right');
   const cardRefs = useRef([]);
 
@@ -54,7 +53,6 @@ const CurrentSeason = ({ currentSeason }) => {
               ref={(el) => (cardRefs.current[idx] = el)}
               onMouseEnter={() => handleMouseEnter(idx)}
               onMouseLeave={() => setHoveredIndex(null)}
-              onClick={() => setPopupAnime(anime)}
               className='flex relative h-73 w-53 transition-all duration-[800ms] z-10'
               style={{ 
                 filter: `${hoveredIndex !== null && hoveredIndex !== idx ? 'brightness(50%)' : 'brightness(100%)'}`,
@@ -84,22 +82,6 @@ const CurrentSeason = ({ currentSeason }) => {
 
         </div>
       </div>
-
-      <AnimatePresence>
-        {popupAnime !== null ? (
-          <motion.div
-            initial={{ y: '100%' }}
-            animate={{ y: 0 }}
-            exit={{ y: '100%' }}
-            className='bg-[#2e041e] fixed inset-0 flex sm:hidden z-[9000]'
-          >
-            <div className='absolute top-5 right-5 cursor-pointer' onClick={() => setPopupAnime(null)}>
-              <X />
-            </div>
-            <h1>{popupAnime?.title}</h1>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
     </div>
   )
 }

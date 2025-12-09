@@ -1,7 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { SearchIcon } from 'lucide-react';
 import { useToast } from '@/providers/toast-provider';
+import Image from 'next/image';
 import gsap from 'gsap';
+
+const formatDuration = (s = '') => {
+  const hr = /(\d+)\s*h(?:r|ours?)?/i.exec(s);
+  const min = /(\d+)\s*m(?:in(?:utes)?)?/i.exec(s);
+  const parts = [];
+  if (hr) parts.push(`${hr[1]}h`);
+  if (min) parts.push(`${min[1]}m`);
+  return parts.join(' ');
+};
 
 const SearchBox = ({ onClose }) => {
   const boxRef = useRef(null);
@@ -10,11 +20,11 @@ const SearchBox = ({ onClose }) => {
   const listRef = useRef(null);
   const [query, setQuery] = useState('');
   const [suggestionData, setSuggestionData] = useState(null);
+  const [suggestionLoading, setSuggestionLoading] = useState(false);
   const [inputFocus, setInputFocus] = useState(true);
   const [focusedSuggestion, setFocusedSuggestion] = useState(null);
   const { toast } = useToast();
-  const ITEM_HEIGHT = 60; 
-  const NAV_COOLDOWN_MS = 100;
+  const ITEM_HEIGHT = 80;
   const lastNavAtRef = useRef(0);
 
   useEffect(() => {
@@ -74,6 +84,7 @@ const SearchBox = ({ onClose }) => {
   }, [suggestionData, inputFocus]);
 
   const fetchQuery = async (query) => {
+    setSuggestionLoading(true);
     try {
       const response = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(query)}&limit=5`);
       if (!response.ok) {
@@ -86,6 +97,8 @@ const SearchBox = ({ onClose }) => {
     } catch (err) {
       toast(`${err.message}`, 'error');
       setSuggestionData([]);
+    } finally {
+      setSuggestionLoading(false)
     }
   }
 
@@ -161,27 +174,47 @@ const SearchBox = ({ onClose }) => {
 
         <div className='w-full h-[1px] bg-white/20' />
 
-        <div className='relative flex flex-col flex-1 overflow-y-auto overflow-x-hidden w-full scroll-smooth' ref={listRef}>
+        <div className='relative flex flex-col flex-1 overflow-y-auto overflow-x-hidden w-full scroll-smooth scrollbar-hide' ref={listRef}>
           <>
+            {suggestionData === null && (
+              <span className='absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white/20 text-sm cursor-default'>Search to see Suggestions</span>
+            )}
             {/* Highlight pill */}
             <div
               ref={highlightRef}
-              className='absolute left-0 w-full h-15 bg-white/90 rounded-sm pointer-events-none z-9998'
+              className='absolute left-0 w-full h-20 bg-white/90 rounded-sm pointer-events-none z-9998'
               style={{ opacity: 0, top: 0 }}
             />
 
             {suggestionData?.map((anime, idx) => (
               <div
                 key={idx}
-                className='w-full h-15 flex items-center text-sm shrink-0 px-4 py-2 border-b-1 border-white/20 z-9999 transition-colors duration-500'
+                className='cursor-pointer w-full h-20 flex items-center justify-between text-sm shrink-0 px-4 py-2 border-b-1 border-white/20 z-9999 transition-colors duration-500'
                 style={{
                   color: idx === focusedSuggestion ? 'black' : 'inherit',
-                  // text color flips when pill is under it
                 }}
               >
-                {anime.title}
+                <div className='flex flex-col justify-center items-start gap-1 max-w-[80%]'>
+                  <span className='line-clamp-1'>{anime.title}</span>
+                  <span className='text-xs flex items-center gap-1'>
+                    <p>{anime.aired.string.split('to')[0].trim()}</p>
+                    •
+                    <p>{anime.type}</p>
+                    •
+                    <p>{formatDuration(anime.duration)}</p>
+                  </span>
+                </div>
+
+                <div className='h-10 w-10 mb-4 bg-white/20'>
+                  <Image alt='' src={anime.images.webp.small_image_url} width={100} height={100} objectFit='contain' />
+                </div>
               </div>
             ))}
+            {suggestionData !== null && (
+              <div className='w-full h-20 p-10 text-sm flex items-center justify-center cursor-pointer hover:bg-white/20'>
+                More results
+              </div>
+            )}
           </>
         </div>
       </div>
