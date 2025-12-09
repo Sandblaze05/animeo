@@ -99,6 +99,15 @@ const Header = () => {
         duration: 0.4
       }, '<');
 
+    const translateTimeline = gsap.timeline({ paused: true });
+    translateTimeline.to(header, {
+      y: 3, 
+      duration: 0.3,
+      delay: 0.2,
+      ease: "power2.out",
+      scale: 0.97
+    });
+
     const handleKeyDown = (e) => {
       if (isSearchOpen) return;
 
@@ -111,7 +120,7 @@ const Header = () => {
 
       if (e.key === 'Control') {
         e.preventDefault();
-        headerTimeline.play();
+        translateTimeline.play();
       }
     };
 
@@ -120,7 +129,7 @@ const Header = () => {
 
       if (e.key === 'Control') {
         e.preventDefault();
-        headerTimeline.reverse();
+        translateTimeline.reverse();
       }
     };
 

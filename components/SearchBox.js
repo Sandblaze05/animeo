@@ -1,8 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { SearchIcon } from 'lucide-react';
 import { useToast } from '@/providers/toast-provider';
+import { AnimatePresence, motion } from 'motion/react';
 import Image from 'next/image';
 import gsap from 'gsap';
+import { useRouter } from 'next/navigation';
 
 const formatDuration = (s = '') => {
   const hr = /(\d+)\s*h(?:r|ours?)?/i.exec(s);
@@ -18,14 +20,17 @@ const SearchBox = ({ onClose }) => {
   const inputRef = useRef(null);
   const highlightRef = useRef(null);
   const listRef = useRef(null);
+
   const [query, setQuery] = useState('');
   const [suggestionData, setSuggestionData] = useState(null);
   const [suggestionLoading, setSuggestionLoading] = useState(false);
   const [inputFocus, setInputFocus] = useState(true);
   const [focusedSuggestion, setFocusedSuggestion] = useState(null);
-  const { toast } = useToast();
   const ITEM_HEIGHT = 80;
   const lastNavAtRef = useRef(0);
+  
+  const { toast } = useToast();
+  const router = useRouter();
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -103,7 +108,10 @@ const SearchBox = ({ onClose }) => {
   }
 
   useEffect(() => {
-    if (!query || query.trim().length === 0) return;
+    if (!query || query.trim().length === 0) {
+      setSuggestionData(null);
+      return;
+    }
 
     const timer = setTimeout(() => {
       fetchQuery(query);
@@ -148,7 +156,10 @@ const SearchBox = ({ onClose }) => {
   return (
     <>
       <div className='fixed inset-0 bg-black/50 z-9998' />
-      <div
+      <motion.div
+        initial={{ scale: 1 }}
+        animate={{ scale: [0.95, 1] }}
+        transition={{ duration: 0.2, ease: 'anticipate', delay: 0.2 }}
         ref={boxRef}
         className='z-9999 transition-all w-[40svw] h-[35svh] bg-black/20 fixed 
         left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-white
@@ -167,6 +178,12 @@ const SearchBox = ({ onClose }) => {
             onChange={(e) => setQuery(e.target.value)}
             onFocus={() => setInputFocus(true)}
             onBlur={() => setInputFocus(false)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                onClose();
+                router.push(`/anime/${query}`);
+              }
+            }}
             autoFocus
             className='w-[95%] ring-0 outline-0 px-4 pt-2 pb-4'
           />
@@ -186,38 +203,47 @@ const SearchBox = ({ onClose }) => {
               style={{ opacity: 0, top: 0 }}
             />
 
-            {suggestionData?.map((anime, idx) => (
-              <div
-                key={idx}
-                className='cursor-pointer w-full h-20 flex items-center justify-between text-sm shrink-0 px-4 py-2 border-b-1 border-white/20 z-9999 transition-colors duration-500'
-                style={{
-                  color: idx === focusedSuggestion ? 'black' : 'inherit',
-                }}
-              >
-                <div className='flex flex-col justify-center items-start gap-1 max-w-[80%]'>
-                  <span className='line-clamp-1'>{anime.title}</span>
-                  <span className='text-xs flex items-center gap-1'>
-                    <p>{anime.aired.string.split('to')[0].trim()}</p>
-                    •
-                    <p>{anime.type}</p>
-                    •
-                    <p>{formatDuration(anime.duration)}</p>
-                  </span>
-                </div>
+            <AnimatePresence mode='wait'>
+              {suggestionData?.map((anime, idx) => (
+                <motion.div
+                  initial={{ y: -10, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  exit={{ y: -5, opacity: 0 }}
+                  transition={{ duration: 0.2, delay: idx * 0.1 }}
+                  key={idx}
+                  className='cursor-pointer w-full h-20 flex items-center justify-between text-sm shrink-0 px-4 py-2 border-b-1 border-white/20 z-9999 transition-colors duration-500'
+                  style={{
+                    color: idx === focusedSuggestion ? 'black' : 'inherit',
+                  }}
+                >
+                  <div className='flex flex-col justify-center items-start gap-1 max-w-[80%]'>
+                    <span className='line-clamp-1'>{anime.title}</span>
+                    <span className='text-xs flex items-center gap-1'>
+                      <p>{anime.aired.string.split('to')[0].trim()}</p>
+                      •
+                      <p>{anime.type}</p>
+                      •
+                      <p>{formatDuration(anime.duration)}</p>
+                    </span>
+                  </div>
 
-                <div className='h-10 w-10 mb-4 bg-white/20'>
-                  <Image alt='' src={anime.images.webp.small_image_url} width={100} height={100} objectFit='contain' />
-                </div>
-              </div>
-            ))}
+                  <div className='h-14 w-10 bg-white/20 overflow-clip rounded-sm'>
+                    <Image alt='' src={anime.images.webp.small_image_url} width={100} height={100} objectFit='contain' />
+                  </div>
+                </motion.div>
+              ))}
+            </AnimatePresence>
             {suggestionData !== null && (
-              <div className='w-full h-20 p-10 text-sm flex items-center justify-center cursor-pointer hover:bg-white/20'>
+              <div 
+                onClick={() => {onClose();router.push(`/anime/${query}`);}} 
+                className='w-full h-20 p-10 text-sm flex items-center justify-center cursor-pointer hover:bg-white/20'
+              >
                 More results
               </div>
             )}
           </>
         </div>
-      </div>
+      </motion.div>
     </>
   )
 }
