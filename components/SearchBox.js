@@ -6,6 +6,8 @@ import Image from 'next/image';
 import gsap from 'gsap';
 import { useRouter } from 'next/navigation';
 
+const searchCache = new Map();
+
 const formatDuration = (s = '') => {
   const hr = /(\d+)\s*h(?:r|ours?)?/i.exec(s);
   const min = /(\d+)\s*m(?:in(?:utes)?)?/i.exec(s);
@@ -89,6 +91,18 @@ const SearchBox = ({ onClose }) => {
   }, [suggestionData, inputFocus]);
 
   const fetchQuery = async (query) => {
+    const now = Date.now();
+
+    if (searchCache.has(query)) {
+      const { data, expiry } = searchCache.get(query);
+      if (now < expiry) {
+        setSuggestionData(data);
+        return;
+      } else {
+        searchCache.delete(query);
+      }
+    }
+
     setSuggestionLoading(true);
     try {
       const response = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(query)}&limit=5`);
@@ -97,13 +111,20 @@ const SearchBox = ({ onClose }) => {
         return;
       }
       const data = await response.json();
+      searchCache.set(query, {
+        data: data.data,
+        expiry: now + 3 * 60 * 1000 // 3 mins
+      });
       setSuggestionData(data.data);
       // toast(`${data.data[0].title}`, 'info');
     } catch (err) {
       toast(`${err.message}`, 'error');
       setSuggestionData([]);
     } finally {
-      setSuggestionLoading(false)
+      setSuggestionLoading(false);
+      if (searchCache.size > 100) {
+        searchCache.delete(searchCache.keys().next().value);
+      }
     }
   }
 
@@ -115,7 +136,7 @@ const SearchBox = ({ onClose }) => {
 
     const timer = setTimeout(() => {
       fetchQuery(query);
-    }, 2000);
+    }, 1000);
 
     return () => clearTimeout(timer);
   }, [query]);
@@ -181,7 +202,7 @@ const SearchBox = ({ onClose }) => {
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 onClose();
-                router.push(`/anime/${query}`);
+                router.push(`/anime/${encodeURIComponent(query)}`);
               }
             }}
             autoFocus

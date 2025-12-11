@@ -15,10 +15,6 @@ const Header = () => {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const pathname = usePathname();
 
-  const handleSearchHotKey = () => {
-
-  }
-
   // This effect handles the selection animation
   useLayoutEffect(() => {
     const selectedPill = selectedPillRef.current;
@@ -86,8 +82,19 @@ const Header = () => {
     if (!header || !activePill) return;
 
     const navLinks = gsap.utils.toArray(".nav-link");
+    let currentLink = null;
 
-    const headerTimeline = gsap.timeline({ paused: true });
+    const headerTimeline = gsap.timeline({
+      paused: true,
+      onUpdate: () => {
+        if (currentLink) {
+          gsap.set(activePill, {
+            x: currentLink.offsetLeft,
+            width: currentLink.offsetWidth
+          });
+        }
+      }
+    });
     headerTimeline.to(header, {
       width: "517px",
       ease: "power2.inOut",
@@ -101,11 +108,11 @@ const Header = () => {
 
     const translateTimeline = gsap.timeline({ paused: true });
     translateTimeline.to(header, {
-      y: 3, 
+      y: -3, 
       duration: 0.3,
-      delay: 0.2,
-      ease: "power2.out",
-      scale: 0.97
+      delay: 0.5,
+      ease: "expo.out",
+      scale: 0.9
     });
 
     const handleKeyDown = (e) => {
@@ -143,13 +150,23 @@ const Header = () => {
 
     navLinks.forEach((link) => {
       link.addEventListener("mouseenter", () => {
-        gsap.to(activePill, {
-          x: link.offsetLeft,
-          width: link.offsetWidth,
-          opacity: 1,
-          ease: "power2.inOut",
-          duration: 0.4
-        });
+        currentLink = link;
+        if (headerTimeline.isActive()) {
+          gsap.killTweensOf(activePill, { x: true, width: true });
+          gsap.to(activePill, {
+            opacity: 1,
+            ease: "power2.inOut",
+            duration: 0.4,
+          });
+        } else {
+          gsap.to(activePill, {
+            x: link.offsetLeft,
+            width: link.offsetWidth,
+            opacity: 1,
+            ease: "power2.inOut",
+            duration: 0.4,
+          });
+        }
       });
     });
 
