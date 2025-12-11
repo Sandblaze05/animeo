@@ -2,7 +2,7 @@
 
 import { Clapperboard, Flame, Home, Tv, NewspaperIcon, User2Icon, SearchIcon } from "lucide-react"
 import Link from "next/link"
-import { usePathname } from "next/navigation"
+import { usePathname, useRouter } from "next/navigation"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { motion, AnimatePresence } from 'motion/react';
 import gsap from "gsap"
@@ -25,7 +25,10 @@ const formatDuration = (s = '') => {
   return parts.join(' ');
 };
 
+const searchCache = new Map();
+
 const MobileNav = () => {
+  const router = useRouter();
   const pathname = usePathname();
   const navRef = useRef(null);
   const selectedPillRef = useRef(null);
@@ -40,6 +43,18 @@ const MobileNav = () => {
   const [suggestionLoading, setSuggestionLoading] = useState(false);
 
   const fetchQuery = async (query) => {
+    const now = Date.now();
+
+    if (searchCache.has(query)) {
+      const { data, expiry } = searchCache.get(query);
+      if (now < expiry) {
+        setSuggestionData(data);
+        return;
+      } else {
+        searchCache.delete(query);
+      }
+    }
+
     setSuggestionLoading(true);
     try {
       const response = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(query)}&limit=5`);
@@ -48,19 +63,26 @@ const MobileNav = () => {
         return;
       }
       const data = await response.json();
+      searchCache.set(query, {
+        data: data.data,
+        expiry: now + 3 * 1000 * 60
+      });
       setSuggestionData(data.data);
     } catch (err) {
       toast(`${err.message}`, 'error');
       setSuggestionData([]);
     } finally {
       setSuggestionLoading(false)
+      if (searchCache.size > 100) {
+        searchCache.delete(searchCache.keys().next().value);
+      }
     }
   }
 
   useEffect(() => {
     if (!query || query.trim().length === 0) {
-        setSuggestionData(null);
-        return;
+      setSuggestionData(null);
+      return;
     }
 
     const timer = setTimeout(() => {
@@ -111,7 +133,7 @@ const MobileNav = () => {
   }, [pathname]);
 
   return (
-    <div className="w-screen z-9000 sm:hidden flex">
+    <div className="w-screen z-9000 sm:hidden">
       <div aria-label="menu" className="fixed left-5 top-5 p-2 h-12 w-12 flex items-center justify-center rounded-full bg-black/20 border-white/20 border-1 shadow-2xl backdrop-blur-lg">
         <svg width="30px" height="30px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M4 18H10" stroke="#FFF" strokeWidth="2" strokeLinecap="round" />
@@ -120,24 +142,30 @@ const MobileNav = () => {
         </svg>
       </div>
       <div className="fixed right-5 top-5 gap-1 flex items-center justify-between ">
-        <motion.div 
+        <motion.form
           whileTap={{ scale: 0.95, y: 0.5 }}
           ref={searchBoxRef}
           onClick={() => inputRef.current?.focus()}
-          className="flex cursor-pointer px-3 gap-3 items-center justify-start text-white w-[35svw] h-12 rounded-full border-1 border-white/20 bg-black/20 backdrop-blur-lg overflow-clip"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (query) router.push(`/anime/${encodeURIComponent(query)}`);
+            inputRef.current?.blur();
+          }}
+          className="flex cursor-pointer px-3 gap-3 items-center justify-start text-white w-[35svw] max-w-[calc(100svw-10rem)] h-12 rounded-full border-1 border-white/20 bg-black/20 backdrop-blur-lg overflow-clip"
         >
           <SearchIcon className="text-white/70 w-5 h-5" />
-          <input 
-            ref={inputRef}  
+          <input
+            ref={inputRef}
             onFocus={() => setInputFocus(true)}
             onBlur={() => setTimeout(() => setInputFocus(false), 200)}
             onChange={(e) => setQuery(e.target.value)}
             value={query}
-            type="text" 
-            placeholder="Search..." 
-            className="flex-1 w-[10svw] h-full ring-0 outline-0 text-xs" 
+            type="search"
+            enterKeyHint="search"
+            placeholder="Search..."
+            className="flex-1 w-[10svw] h-full ring-0 outline-0 text-xs bg-transparent"
           />
-        </motion.div>
+        </motion.form>
 
         <div aria-label="profile" className="h-12 w-12 flex justify-center items-center rounded-full bg-black/20 border-white/20 border-1 shadow-2xl backdrop-blur-lg">
           <User2Icon className="text-white fill-white" />
