@@ -199,17 +199,18 @@ const MobileNav = () => {
       </div>
       <footer
         ref={navRef}
-        className="fixed bottom-4 left-1/2 -translate-x-1/2 w-[90vw] h-16 border-[1px] border-white/20 bg-black/30 backdrop-blur-lg flex sm:hidden justify-around items-center rounded-2xl shadow-2xl p-1 z-[9999]"
+        className="fixed bottom-4 left-1/2 -translate-x-1/2 w-[60vw] h-13 border-[1px] border-white/20 bg-black/30 backdrop-blur-lg flex sm:hidden justify-around items-center rounded-full shadow-2xl p-1 z-[9999]"
       >
         <div
           ref={selectedPillRef}
-          className="absolute left-0 h-[calc(100%-0.5rem)] bg-white/20 rounded-xl opacity-0 -z-10"
+          className="absolute left-0 h-[calc(100%-0.5rem)] bg-white/40 rounded-full opacity-0 -z-10"
         ></div>
 
         {navItems.map((item) => {
           const isActive = pathname === item.href;
           return (
             <Link
+              aria-label={item.name}
               key={item.name}
               href={item.href}
               className="flex-1 h-full flex justify-center items-center"

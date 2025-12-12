@@ -106,14 +106,8 @@ const Header = () => {
         duration: 0.4
       }, '<');
 
-    const translateTimeline = gsap.timeline({ paused: true });
-    translateTimeline.to(header, {
-      y: -3, 
-      duration: 0.3,
-      delay: 0.5,
-      ease: "expo.out",
-      scale: 0.9
-    });
+    let isCtrlPressed = false;
+    let ctrlTween = null;
 
     const handleKeyDown = (e) => {
       if (isSearchOpen) return;
@@ -127,7 +121,17 @@ const Header = () => {
 
       if (e.key === 'Control') {
         e.preventDefault();
-        translateTimeline.play();
+        if (isCtrlPressed) return;
+        isCtrlPressed = true;
+
+        ctrlTween = gsap.to(header, {
+          y: -3,
+          duration: 0.3,
+          delay: 0.5,
+          ease: "expo.out",
+          scale: 0.9,
+          overwrite: "auto"
+        });
       }
     };
 
@@ -136,7 +140,24 @@ const Header = () => {
 
       if (e.key === 'Control') {
         e.preventDefault();
-        translateTimeline.reverse();
+        isCtrlPressed = false;
+
+        const currentScale = gsap.getProperty(header, "scale");
+
+        if (currentScale < 1) {
+          gsap.to(header, {
+            y: 0,
+            scale: 1,
+            duration: 0.5,
+            ease: "elastic.out(1, 0.3)",
+            overwrite: "auto"
+          });
+        } else {
+          if (ctrlTween) {
+            ctrlTween.kill();
+            ctrlTween = null;
+          }
+        }
       }
     };
 
