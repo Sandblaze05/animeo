@@ -15,9 +15,12 @@ const page = async ({ params }) => {
       const data = await response.json();
       listOfAnime = data.data;
       pagination = data.pagination;
+    } else {
+      throw new Error(`API Error: ${response.status}`);
     }
   } catch (err) {
     console.error("Error fetching anime:", err);
+    throw new Error("Failed to fetch anime data");
   }
 
   return (

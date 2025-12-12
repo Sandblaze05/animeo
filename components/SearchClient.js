@@ -3,6 +3,7 @@
 import { useToast } from '@/providers/toast-provider';
 import { Star, PlusIcon, PlayIcon, Grid2X2Icon, ListIcon, Loader2 } from 'lucide-react';
 import React, { useState } from 'react';
+import Image from 'next/image';
 import { motion } from 'motion/react';
 
 const SearchClient = ({ title, initialData, initialPagination }) => {
@@ -12,6 +13,7 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
   const [pagination, setPagination] = useState(initialPagination || {});
   const [layoutType, setLayoutType] = useState('grid');
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [selectedEntry, setSelectedEntry] = useState(null);
 
   const buttonVariants = {
     initial: { gap: "0px" },
@@ -93,16 +95,28 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
 
           <div className='flex flex-wrap scrollbar-hide scroll-smooth content-start gap-4 overflow-x-hidden overflow-y-scroll px-4 pb-6 pt-14 w-full h-full lg:rounded-tr-xl rounded-none'>
             {listOfAnime?.map((anime, i) => (
-              <div key={`${anime.mal_id}-${i}`} className='relative aspect-[2/3] w-[calc(50%-0.5rem)] md:w-[calc(33.33%-0.7rem)] lg:w-[calc(25%-0.75rem)] xl:w-[calc(20%-0.8rem)] bg-white/5 hover:bg-white/10 border-1 border-white/20 rounded-xl overflow-hidden group flex flex-col justify-end cursor-pointer'>
-                <img
+              <div
+                key={`${anime.mal_id}-${i}`}
+                onClick={() => setSelectedEntry(i)}
+                style={{
+                  borderColor: selectedEntry === i ? 'oklch(59.2% 0.249 0.584)' : 'color-mix(in oklab, var(--color-white) 20%, transparent)',
+                  borderWidth: selectedEntry === i ? '4px' : '1px',
+                }}
+                className='relative aspect-[2/3] w-[calc(50%-0.5rem)] md:w-[calc(33.33%-0.7rem)] lg:w-[calc(25%-0.75rem)]
+                xl:w-[calc(20%-0.8rem)] bg-white/5 hover:bg-white/10 border-1 transition-all rounded-xl overflow-hidden 
+                group flex flex-col justify-end cursor-pointer'
+              >
+                <Image
                   src={anime.images.webp.large_image_url}
                   alt={anime.title}
+                  width={100}
+                  height={100}
                   className="absolute inset-0 w-full h-full object-cover transition-transform duration-300 group-hover:scale-110"
                 />
 
                 <div className="absolute bottom-0 left-0 w-full h-1/2 bg-gradient-to-t from-black/90 via-black/50 to-transparent" />
 
-                <h1 className='relative text-sm font-bold text-white text-center px-2 pb-3 line-clamp-2'>
+                <h1 className='relative max-w-[80%] mx-auto max-h-10 text-sm font-bold text-white text-center px-2 pb-3 line-clamp-2'>
                   {anime.title}
                 </h1>
               </div>
@@ -121,63 +135,66 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
             )}
           </div>
         </div>
+        {selectedEntry !== null && (
+          <div className='lg:flex flex-col lg:flex-1 hidden p-4 justify-start items-center gap-3'>
+            <div className='relative border-1 border-white/20 rounded-xl aspect-[9/16] h-60 w-40'>
+              <Image
+                src={listOfAnime[selectedEntry].images.webp.large_image_url}
+                alt={listOfAnime[selectedEntry].title}
+                width={100}
+                height={100}
+                className="absolute inset-0 rounded-xl w-full h-full object-cover transition-transform duration-300 group-hover:scale-110"
+              />
+              <h1 className='absolute w-[20rem] -bottom-3 left-1/2 -translate-x-1/2 text-lg text-center font-bold [text-shadow:0px_0px_2px_black] leading-4.5 tracking-tight line-clamp-2'>
+                {listOfAnime[selectedEntry].title}
+              </h1>
+            </div>
 
-        <div className='lg:flex flex-col lg:flex-1 hidden p-4 justify-start items-center gap-3'>
-          <div className='relative border-1 border-white/20 rounded-xl aspect-[9/16] h-60 w-40'>
-            <h1 className='absolute max-w-[97%] -bottom-4 left-1/2 -translate-x-1/2 text-lg text-center font-bold [text-shadow:0px_0px_15px_black] line-clamp-2'>
-              Absurdly Long Title
-            </h1>
-          </div>
+            <div className='flex gap-2 items-center justify-center text-xs text-white/40 mt-1'>
+              <span className='flex items-center justify-around gap-1 font-bold'><Star className='text-white/40 fill-white/40 inline-block h-3 w-3' />{listOfAnime[selectedEntry].score}</span>
+              |
+              <span className='font-bold'>{listOfAnime[selectedEntry].type}</span>
+              |
+              <span
+                className='rounded-md font-bold bg-white/40 text-black flex items-center justify-center px-1'
+              >
+                {listOfAnime[selectedEntry].rating.match(/^[A-Za-z0-9+-]+/)[0]}
+              </span>
+            </div>
 
-          <div className='flex gap-2 items-center justify-center text-xs text-white/40 mt-1'>
-            <span className='flex items-center justify-around gap-1 font-bold'><Star className='text-white/40 fill-white/40 inline-block h-3 w-3' /> 7.9</span>
-            |
-            <span className='font-bold'>TV</span>
-            |
-            <span
-              className='rounded-md font-bold bg-white/40 text-black flex items-center justify-center px-1'
-            >
-              R-17+
-            </span>
-          </div>
+            <div className='h-10 w-[80%] mx-auto flex flex-row-reverse gap-2 items-center justify-center mt-2'>
+              <motion.button
+                initial="initial"
+                whileHover="hover"
+                whileTap={{ scale: 0.95, y: 1 }}
+                variants={buttonVariants}
+                onClick={() => toast('Adding to list', 'info')}
+                className="flex items-center px-5 py-2.5 bg-pink-600 rounded-full font-semibold hover:bg-pink-500 transition-colors"
+              >
+                <motion.div variants={iconVariants} className="overflow-hidden">
+                  <PlusIcon className="w-5 h-5" />
+                </motion.div>
+                <span>Add to List</span>
+              </motion.button>
+              <motion.button
+                initial="initial"
+                whileHover="hover"
+                whileTap={{ scale: 0.95, y: 1 }}
+                variants={buttonVariants}
+                className="flex items-center gap-2 px-5 py-2.5 bg-white/10 rounded-full font-semibold backdrop-blur-sm hover:bg-white/20 transition-colors"
+              >
+                <motion.div variants={iconVariants} className="overflow-hidden">
+                  <PlayIcon className="w-5 h-5" />
+                </motion.div>
+                <span>Watch</span>
+              </motion.button>
+            </div>
 
-          <div className='h-10 w-[80%] mx-auto flex flex-row-reverse gap-2 items-center justify-center mt-2'>
-            <motion.button
-              initial="initial"
-              whileHover="hover"
-              whileTap={{ scale: 0.95, y: 1 }}
-              variants={buttonVariants}
-              onClick={() => toast('Adding to list', 'info')}
-              className="flex items-center px-5 py-2.5 bg-pink-600 rounded-full font-semibold hover:bg-pink-500 transition-colors"
-            >
-              <motion.div variants={iconVariants} className="overflow-hidden">
-                <PlusIcon className="w-5 h-5" />
-              </motion.div>
-              <span>Add to List</span>
-            </motion.button>
-            <motion.button
-              initial="initial"
-              whileHover="hover"
-              whileTap={{ scale: 0.95, y: 1 }}
-              variants={buttonVariants}
-              className="flex items-center gap-2 px-5 py-2.5 bg-white/10 rounded-full font-semibold backdrop-blur-sm hover:bg-white/20 transition-colors"
-            >
-              <motion.div variants={iconVariants} className="overflow-hidden">
-                <PlayIcon className="w-5 h-5" />
-              </motion.div>
-              <span>Watch</span>
-            </motion.button>
+            <div className='text-sm tracking-wide leading-6 px-3 mt-5 w-full line-clamp-6 '>
+              {listOfAnime[selectedEntry].synopsis}
+            </div>
           </div>
-
-          <div className='text-sm tracking-wide leading-6 px-3 mt-5'>
-            Lorem ipsum dolor sit amet consectetur adipisicing elit.
-            Odit commodi tempore sint excepturi nobis corrupti similique unde corporis quidem,
-            velit quibusdam minima, impedit quia nemo eum non nulla ex qui?
-            Lorem ipsum dolor sit amet consectetur adipisicing elit.
-            Ullam eum, dolorum at, reiciendis facilis vero eligendi eaque tempora perferendis
-            harum exercitationem voluptate iusto expedita a reprehenderit architecto. Consectetur, harum odio.
-          </div>
-        </div>
+        )}
       </div>
     </div>
   )
