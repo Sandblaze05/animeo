@@ -256,7 +256,7 @@ const SearchBox = ({ onClose }) => {
             </AnimatePresence>
             {suggestionData !== null && (
               <div 
-                onClick={() => {onClose();router.push(`/anime/${query}`);}} 
+                onClick={() => {onClose();router.push(`/anime/${encodeURIComponent(query)}`);}} 
                 className='w-full h-20 p-10 text-sm flex items-center justify-center cursor-pointer hover:bg-white/20'
               >
                 More results
