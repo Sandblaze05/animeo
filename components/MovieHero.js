@@ -5,7 +5,7 @@ import { motion } from 'motion/react';
 import { useToast } from '@/providers/toast-provider';
 import ParallaxCoverImage from './ParallaxCoverImage';
 
-export default function AnimeHero({ animeList }) {
+export default function MovieHero({ movieList }) {
   const { toast } = useToast();
 
   const [activeIndex, setActiveIndex] = useState(0);
@@ -14,7 +14,7 @@ export default function AnimeHero({ animeList }) {
   const scrollContainerRef = useRef(null);
   const interactionTimeoutRef = useRef(null);
   const scrollTimeoutRef = useRef(null)
-  const slidesToDisplay = animeList.slice(0, 7);
+  const slidesToDisplay = movieList.slice(0, 7);
 
   useEffect(() => {
     if (slidesToDisplay.length <= 1 || isUserInteracting) return;
@@ -117,24 +117,24 @@ export default function AnimeHero({ animeList }) {
         className="overflow-x-auto snap-x snap-mandatory scrollbar-hide h-full"
       >
         <div className="flex h-full">
-          {animeList.slice(0, 7).map((animeData, index) => (
+          {movieList.slice(0, 7).map((movieData, index) => (
             <section
-              key={animeData.title}
+              key={movieData.title}
               data-index={index}
               className="relative min-w-full h-full text-white snap-center flex-shrink-0 overflow-visible"
             >
               {/* Mobile: Show cover image as background */}
               <Image
-                src={animeData.coverImage}
-                alt={`${animeData.title} cover`}
+                src={movieData.coverImage}
+                alt={`${movieData.title} cover`}
                 className="md:hidden object-cover brightness-70"
                 fill
                 priority={index === 0}
               />
               {/* Desktop: Show banner image as background */}
               <Image
-                src={animeData.bannerImage}
-                alt={`${animeData.title} banner`}
+                src={movieData.bannerImage}
+                alt={`${movieData.title} banner`}
                 className="hidden md:block object-cover brightness-50"
                 fill
                 priority={index === 0}
@@ -143,20 +143,20 @@ export default function AnimeHero({ animeList }) {
               <div className="relative h-full flex items-end p-4 sm:p-8 md:p-12 overflow-visible">
                 <div className="w-full flex flex-col md:flex-row items-center md:items-end gap-6 [perspective:1000px]">
                   {/* COVER IMAGE */}
-                  <ParallaxCoverImage animeData={animeData} />
+                  <ParallaxCoverImage animeData={movieData} />
                   {/* TEXT & ACTION CONTENT */}
                   <div className="flex flex-col items-center md:items-start gap-4 text-center md:text-left">
                     <h1 className="text-5xl font-extrabold tracking-tighter text-balance max-w-[300px] md:max-w-[70svw] line-clamp-4 sm:line-clamp-2">
-                      {animeData.title}
+                      {movieData.title}
                     </h1>
                     <div className="flex flex-wrap justify-center md:justify-start items-center gap-2 text-sm">
-                      <span className="font-semibold bg-pink-500/80 px-3 py-1 rounded-full">{"Airing"}</span>
-                      {animeData.genres.slice(0, 3).map((genre) => (
+                      <span className="font-semibold bg-pink-500/80 px-3 py-1 rounded-full">{"Movie"}</span>
+                      {movieData.genres.slice(0, 3).map((genre) => (
                         <span key={genre} className="bg-white/10 px-3 py-1 rounded-full backdrop-blur-sm">{genre}</span>
                       ))}
                     </div>
                     <p className="hidden md:block max-w-2xl text-white/80 text-sm leading-relaxed line-clamp-3">
-                      {animeData.description}
+                      {movieData.description}
                     </p>
                     <div className="flex items-center gap-3 mt-2">
                       <motion.button
