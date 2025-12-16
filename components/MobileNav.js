@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import gsap from "gsap"
 import Image from "next/image"
 import { useToast } from "@/providers/toast-provider"
+import { createClient } from "@/utils/supabase/client"
 
 const navItems = [
   { name: 'Home', href: '/', icon: Home },
@@ -41,6 +42,71 @@ const MobileNav = () => {
   const [query, setQuery] = useState('');
   const [suggestionData, setSuggestionData] = useState(null);
   const [suggestionLoading, setSuggestionLoading] = useState(false);
+
+  // Auth states
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [showAuthForm, setShowAuthForm] = useState(false);
+  const [user, setUser] = useState(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [isLoginMode, setIsLoginMode] = useState(true);
+
+  // Auth effect
+  useEffect(() => {
+    const supabase = createClient();
+    
+    const getUser = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      setUser(session?.user ?? null);
+    };
+    getUser();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    const supabase = createClient();
+    
+    try {
+      if (isLoginMode) {
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+        if (error) throw error;
+        toast("Logged in successfully", "success");
+        setIsProfileOpen(false);
+        setShowAuthForm(false);
+      } else {
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+        });
+        if (error) throw error;
+        toast("Check your email for confirmation link", "success");
+        setIsProfileOpen(false);
+        setShowAuthForm(false);
+      }
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    toast("Logged out successfully", "success");
+    setIsProfileOpen(false);
+  };
 
   const fetchQuery = async (query) => {
     const now = Date.now();
@@ -167,8 +233,88 @@ const MobileNav = () => {
           />
         </motion.form>
 
-        <div aria-label="profile" className="h-12 w-12 flex justify-center items-center rounded-full bg-black/20 border-white/20 border-1 shadow-2xl backdrop-blur-lg">
-          <User2Icon className="text-white fill-white" />
+        <div className="relative">
+          <motion.div
+            onClick={() => setIsProfileOpen(prev => !prev)}
+            whileTap={{ scale: 0.95 }}
+            aria-label="profile"
+            className="h-12 w-12 flex justify-center items-center rounded-full bg-black/20 border-white/20 border-1 shadow-2xl backdrop-blur-lg cursor-pointer"
+          >
+            <User2Icon className="text-white fill-white" />
+          </motion.div>
+
+          <AnimatePresence>
+            {isProfileOpen && (
+              <motion.div
+                initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                className="absolute top-full mt-2 right-0 w-[70vw] max-w-[300px] flex flex-col gap-5 justify-center items-center p-4 rounded-xl bg-black/60 backdrop-blur-xl border border-white/20 shadow-2xl z-50"
+              >
+                {user ? (
+                  <div className="flex flex-col gap-2 text-white px-4 py-3 w-full items-center">
+                    <span className="text-white text-xs truncate max-w-full">{user.email}</span>
+                    <motion.button
+                      onClick={handleSignOut}
+                      whileTap={{ scale: 0.97, y: 1 }}
+                      className="w-[90%] h-7 mx-auto mt-3 text-white text-xs text-nowrap flex items-center justify-center px-4 py-2 rounded-full bg-pink-600"
+                    >
+                      Sign Out
+                    </motion.button>
+                  </div>
+                ) : showAuthForm ? (
+                  <div className="flex flex-col gap-2 text-white px-4 py-3 w-full">
+                    <form onSubmit={handleAuth} className="flex flex-col gap-2">
+                      <input
+                        type="email"
+                        name="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        placeholder="example@gmail.com"
+                        title="email"
+                        className="ring-0 outline-1 outline-white/20 rounded-md px-2 py-1 text-sm focus:ring-0 bg-transparent placeholder:text-white/50"
+                        required
+                      />
+                      <input
+                        type="password"
+                        name="password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="password"
+                        title="password"
+                        className="ring-0 outline-1 mt-1 outline-white/20 rounded-md px-2 py-1 text-sm focus:ring-0 bg-transparent placeholder:text-white/50"
+                        required
+                      />
+                      <motion.button
+                        disabled={loading}
+                        whileTap={{ scale: 0.97, y: 1 }}
+                        className="w-[90%] h-7 mx-auto mt-3 text-white text-xs text-nowrap flex items-center justify-center px-4 py-2 rounded-full bg-pink-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {loading ? "Loading..." : (isLoginMode ? "Login" : "Register")}
+                      </motion.button>
+                    </form>
+                    <button
+                      onClick={() => setIsLoginMode(!isLoginMode)}
+                      className="text-[10px] text-gray-300 hover:text-white mt-2 text-center w-full underline decoration-dotted"
+                    >
+                      {isLoginMode ? "Need an account? Register" : "Have an account? Login"}
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <span className="text-white text-xs">{":( Not logged in"}</span>
+                    <motion.button
+                      onClick={() => setShowAuthForm(true)}
+                      whileTap={{ scale: 0.97, y: 1 }}
+                      className="w-[90%] h-7 text-white text-xs text-nowrap flex items-center justify-center px-4 py-2 rounded-full bg-pink-600"
+                    >
+                      Login / Register
+                    </motion.button>
+                  </>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         <AnimatePresence>

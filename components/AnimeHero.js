@@ -1,15 +1,19 @@
+'use client'
+
 import { useState, useEffect, useRef } from 'react';
 import Image from "next/image";
 import { PlayIcon, PlusIcon } from "lucide-react";
 import { motion } from 'motion/react';
 import { useToast } from '@/providers/toast-provider';
 import ParallaxCoverImage from './ParallaxCoverImage';
+import { addAnimeToDefaultList } from '@/app/actions';
 
 export default function AnimeHero({ animeList }) {
   const { toast } = useToast();
 
   const [activeIndex, setActiveIndex] = useState(0);
   const [isUserInteracting, setIsUserInteracting] = useState(false);
+  const [addingToList, setAddingToList] = useState(false);
 
   const scrollContainerRef = useRef(null);
   const interactionTimeoutRef = useRef(null);
@@ -77,6 +81,20 @@ export default function AnimeHero({ animeList }) {
     setActiveIndex(index);
     // handleUserInteraction();
   }
+
+  const handleAddToList = async (animeData) => {
+    if (addingToList) return;
+    
+    setAddingToList(true);
+    try {
+      await addAnimeToDefaultList(animeData);
+      toast('Added to your list!', 'success');
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      setAddingToList(false);
+    }
+  };
 
   useEffect(() => {
     return () => {
@@ -164,13 +182,14 @@ export default function AnimeHero({ animeList }) {
                         whileHover="hover"
                         whileTap={{ scale: 0.95, y: 1 }}
                         variants={buttonVariants}
-                        onClick={() => toast('Yoooo', 'info')}
-                        className="sm:flex hidden items-center px-5 py-2.5 bg-pink-600 rounded-full font-semibold hover:bg-pink-500 transition-colors"
+                        onClick={() => handleAddToList(animeData)}
+                        disabled={addingToList}
+                        className="sm:flex hidden items-center px-5 py-2.5 bg-pink-600 rounded-full font-semibold hover:bg-pink-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <motion.div variants={iconVariants} className="overflow-hidden">
                           <PlusIcon className="w-5 h-5" />
                         </motion.div>
-                        <span>Add to List</span>
+                        <span>{addingToList ? 'Adding...' : 'Add to List'}</span>
                       </motion.button>
                       <motion.button
                         initial="initial"
@@ -187,10 +206,12 @@ export default function AnimeHero({ animeList }) {
 
                       <motion.button
                         whileTap={{ scale: 0.95, y: 1 }}
-                        className="sm:hidden flex items-center gap-2 px-5 py-2.5 bg-pink-600 rounded-full font-semibold hover:bg-pink-500 transition-colors"
+                        onClick={() => handleAddToList(animeData)}
+                        disabled={addingToList}
+                        className="sm:hidden flex items-center gap-2 px-5 py-2.5 bg-pink-600 rounded-full font-semibold hover:bg-pink-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <PlusIcon className="w-5 h-5" />
-                        Add to List
+                        {addingToList ? 'Adding...' : 'Add to List'}
                       </motion.button>
                       <motion.button
                         whileTap={{ scale: 0.95, y: 1 }}

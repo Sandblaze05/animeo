@@ -3,9 +3,12 @@
 import gsap from "gsap"
 import { SearchIcon, User2Icon } from "lucide-react"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { motion } from 'motion/react'
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import SearchBox from "./SearchBox"
+import { createClient } from "@/utils/supabase/client"
+import { useToast } from "@/providers/toast-provider"
 
 const Header = () => {
   const headerRef = useRef(null);
@@ -13,7 +16,73 @@ const Header = () => {
   const selectedPillRef = useRef(null);
   const previousLinkRef = useRef(null);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [showAuthForm, setShowAuthForm] = useState(false);
   const pathname = usePathname();
+
+  // Auth states
+  const { toast } = useToast();
+  const [user, setUser] = useState(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [isLoginMode, setIsLoginMode] = useState(true);
+
+  // Check auth state on mount
+  useEffect(() => {
+    const supabase = createClient();
+
+    const getUser = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      setUser(session?.user ?? null);
+    };
+    getUser();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    const supabase = createClient();
+
+    try {
+      if (isLoginMode) {
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+        if (error) throw error;
+        toast("Logged in successfully", "success");
+        setIsProfileOpen(false);
+        setShowAuthForm(false);
+      } else {
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+        });
+        if (error) throw error;
+        toast("Check your email for confirmation link", "success");
+        setIsProfileOpen(false);
+        setShowAuthForm(false);
+      }
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    toast("Logged out successfully", "success");
+    setIsProfileOpen(false);
+  };
 
   // This effect handles the selection animation
   useLayoutEffect(() => {
@@ -212,16 +281,99 @@ const Header = () => {
 
   return (
     <div className="w-screen z-9000 hidden sm:flex">
-      <div aria-label="menu" className="fixed left-7 top-5 p-2 h-12 w-12 flex items-center justify-center rounded-full bg-black/20 border-white/20 border-1 shadow-2xl backdrop-blur-lg">
+      <motion.div
+        whileTap={{ scaleX: 0.95, scaleY: 0.9 }}
+        aria-label="menu"
+        className="fixed left-7 top-5 p-2 h-12 w-12 flex items-center justify-center 
+        rounded-full bg-black/20 border-white/20 border-1 shadow-2xl backdrop-blur-lg"
+      >
         <svg width="30px" height="30px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M4 18H10" stroke="#FFF" strokeWidth="2" strokeLinecap="round" />
           <path d="M4 12L16 12" stroke="#FFF" strokeWidth="2" strokeLinecap="round" />
           <path d="M4 6L20 6" stroke="#FFF" strokeWidth="2" strokeLinecap="round" />
         </svg>
+      </motion.div>
+
+      <div className="fixed right-7 top-5 z-50">
+        <motion.div
+          onClick={() => setIsProfileOpen(prev => !prev)}
+          whileTap={{ scaleX: 0.95, scaleY: 0.9 }}
+          aria-label="profile"
+          className="h-12 w-12 flex items-center justify-center 
+          rounded-full bg-black/20 border-white/20 border-1 
+          shadow-2xl backdrop-blur-lg cursor-pointer"
+        >
+          <User2Icon className="text-white fill-white" />
+        </motion.div>
+        {isProfileOpen && (
+          <div
+            className="absolute transition-all flex flex-col gap-5 justify-center items-center p-4 top-full mt-2 right-0 w-[clamp(16rem,20svw,24rem)] rounded-xl bg-black/20 backdrop-blur-xl border border-white/20 shadow-2xl"
+          >
+            {user ? (
+              <div className="flex flex-col gap-2 text-white px-4 py-3 w-full items-center">
+                <span className="text-white text-xs truncate max-w-full">{user.email}</span>
+                <motion.button
+                  onClick={handleSignOut}
+                  whileTap={{ scale: 0.97, y: 1 }}
+                  className="w-[90%] h-7 mx-auto mt-3 text-white text-xs text-nowrap flex items-center justify-center px-4 py-2 rounded-full bg-pink-600"
+                >
+                  Sign Out
+                </motion.button>
+              </div>
+            ) : showAuthForm ? (
+              <div className="flex flex-col gap-2 text-white px-4 py-3 w-full">
+                <form onSubmit={handleAuth} className="flex flex-col gap-2">
+                  <input
+                    type="email"
+                    name="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="example@gmail.com"
+                    title="email"
+                    className="ring-0 outline-1 outline-white/20 rounded-md px-2 py-1 text-sm focus:ring-0 bg-transparent placeholder:text-white/50"
+                    required
+                  />
+                  <input
+                    type="password"
+                    name="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="password"
+                    title="password"
+                    className="ring-0 outline-1 mt-1 outline-white/20 rounded-md px-2 py-1 text-sm focus:ring-0 bg-transparent placeholder:text-white/50"
+                    required
+                  />
+                  <motion.button
+                    disabled={loading}
+                    whileTap={{ scale: 0.97, y: 1 }}
+                    className="w-[90%] h-7 mx-auto mt-3 text-white text-xs text-nowrap flex items-center justify-center px-4 py-2 rounded-full bg-pink-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {loading ? "Loading..." : (isLoginMode ? "Login" : "Register")}
+                  </motion.button>
+                </form>
+                <button
+                  onClick={() => setIsLoginMode(!isLoginMode)}
+                  className="text-[10px] text-gray-300 hover:text-white mt-2 text-center w-full underline decoration-dotted"
+                >
+                  {isLoginMode ? "Need an account? Register" : "Have an account? Login"}
+                </button>
+              </div>
+            ) : (
+              <>
+                <span className="text-white text-xs">{":( Not logged in"}</span>
+                <motion.button
+                  onClick={() => setShowAuthForm(true)}
+                  whileTap={{ scale: 0.97, y: 1 }}
+                  className="w-[90%] h-7 text-white text-xs text-nowrap flex items-center justify-center px-4 py-2 rounded-full bg-pink-600"
+                >
+                  Login / Register
+                </motion.button>
+              </>
+            )}
+          </div>
+        )}
       </div>
-      <div aria-label="profile" className="fixed right-7 top-5 h-12 w-12 flex items-center justify-center rounded-full bg-black/20 border-white/20 border-1 shadow-2xl backdrop-blur-lg">
-        <User2Icon className="text-white fill-white" />
-      </div>
+
       <header
         ref={headerRef}
         className="fixed top-5 left-1/2 -translate-x-1/2 overflow-hidden hidden w-[456px] h-10 border-[1px] border-white/20 backdrop-blur-lg bg-black/20 sm:flex justify-between gap-3 items-center rounded-full shadow-2xl p-1 font-semibold z-[9999]"
