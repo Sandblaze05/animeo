@@ -64,7 +64,7 @@ const SeasonFlyCard = ({ anime, color, isOnLeft = false }) => {
           style={{ border: `1px solid ${color}`, boxShadow: isOnLeft ? `-6px 6px 0px ${color}` : `6px 6px 0px ${color}` }}
           className='h-full w-29 px-4 py-2 overflow-clip bg-[#0b001f] flex items-center justify-center text-xs'
         >
-          {anime.type} • {(anime.length !== 0) ? anime.season.charAt(0).toUpperCase() + anime.season.slice(1) : null} {anime.year}
+          {anime.type} • {(anime.length !== 0) ? anime.season?.charAt(0).toUpperCase() + anime.season?.slice(1) : null} {anime.year}
         </span>
 
         {/* Play */}
