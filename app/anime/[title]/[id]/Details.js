@@ -239,32 +239,39 @@ const mergeSeasonData = (season, jikanMeta) => {
 
 /* ─── Component ───────────────────────────────────────────── */
 
-const Details = async ({ title }) => {
-  if (!title) return <div>No title provided</div>;
+// 1. Accept BOTH title and id as props
+const Details = async ({ title, id }) => {
+  if (!title && !id) return <div>No anime provided</div>;
 
   try {
-    /* 1. Search MAL with a cleaned query, then score results */
-    const searchResults = await searchMAL(title);
-    if (!searchResults.length) return <div>No anime found</div>;
+    let matchedMalId = id ? parseInt(id, 10) : null;
 
-    const bestMatch = pickBestMatch(title, searchResults);
-    if (!bestMatch) return <div>No anime found</div>;
+    // 2. Only run the search if we DON'T have an ID
+    if (!matchedMalId && title) {
+      const searchResults = await searchMAL(title);
+      if (!searchResults.length) return <div>No anime found for "{title}"</div>;
 
-    const matchedMalId = bestMatch.mal_id;
+      const bestMatch = pickBestMatch(title, searchResults);
+      if (!bestMatch) return <div>No exact match found for "{title}"</div>;
 
-    /* 2. Climb the PREQUEL chain to find the true franchise root */
+      matchedMalId = bestMatch.mal_id;
+    }
+
+    if (!matchedMalId) return <div>Could not resolve anime ID</div>;
+
+    /* 3. Climb the PREQUEL chain to find the true franchise root */
     const rootMalId = await findFranchiseRoot(matchedMalId);
 
-    /* 3. Discover the full franchise (BFS over SEQUEL/PREQUEL edges) */
+    /* 4. Discover the full franchise (BFS over SEQUEL/PREQUEL edges) */
     const franchiseMap = await discoverFranchise(rootMalId);
 
-    /* 4. Fetch Jikan metadata for every discovered entry */
+    /* 5. Fetch Jikan metadata for every discovered entry */
     let seasons = Array.from(franchiseMap.values());
     const jikanMetaList = await Promise.all(
       seasons.map(s => fetchAnimeMeta(s.malId))
     );
 
-    /* 5. Merge + sort chronologically */
+    /* 6. Merge + sort chronologically */
     seasons = seasons
       .map((season, i) => mergeSeasonData(season, jikanMetaList[i]))
       .sort((a, b) => {
@@ -273,18 +280,40 @@ const Details = async ({ title }) => {
         return 0;
       });
 
-    /* 6. Fetch episodes for each season */
+    /* 7. Fetch episodes for each season + Fallback Generator */
     const seasonData = [];
     for (const season of seasons) {
-      const episodes = await fetchAllEpisodes(season.malId);
+      let episodes = await fetchAllEpisodes(season.malId);
+
+      // --- THE FALLBACK GENERATOR ---
+      // If the API failed to give us the episodes, but we KNOW how many there should be:
+      const expectedCount = season.episodesCount;
+      if (expectedCount && episodes.length < expectedCount) {
+        const missingCount = expectedCount - episodes.length;
+
+        // Figure out what episode number to start the placeholders at
+        const startingEpNum = episodes.length > 0
+          ? episodes[episodes.length - 1].mal_id + 1
+          : 1;
+
+        for (let i = 0; i < missingCount; i++) {
+          episodes.push({
+            mal_id: startingEpNum + i,
+            title: `Episode ${startingEpNum + i}`,
+            title_romaji: 'TBA', // A nice little placeholder text
+            aired: null, // We don't know the air date
+          });
+        }
+      }
+
       seasonData.push({ ...season, episodes });
     }
 
     /* 7. Build final payload */
     const payload = {
-      title,
+      title: title || seasons[0]?.title || 'Unknown Title',
       rootMalId,
-      matchedMalId,            // which entry the search actually hit
+      matchedMalId,            // which entry we actually started from
       seasons: seasonData,
     };
 

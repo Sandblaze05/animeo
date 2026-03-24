@@ -74,7 +74,7 @@ const SeasonFlyCard = ({ anime, color, isOnLeft = false }) => {
           <motion.div
             whileTap={{ x: 4, y: 4 }}
             style={{ border: `1px solid ${color}` }}
-            onClick={() => router.push(`/anime/${anime.title}/details`)}
+            onClick={() => router.push(`/anime/${anime.title}/${anime.id}`)}
             className='relative h-full w-full bg-[#0b001f] flex items-center justify-center text-xs z-20'
           >
             <PlayIcon size={20} stroke={color} />
