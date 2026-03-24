@@ -87,7 +87,8 @@ export default function AnimeHero({ animeList }) {
     
     setAddingToList(true);
     try {
-      await addAnimeToDefaultList(animeData);
+      const profileId = typeof window !== 'undefined' ? localStorage.getItem('profileId') : null;
+      await addAnimeToDefaultList(animeData, profileId || undefined);
       toast('Added to your list!', 'success');
     } catch (error) {
       toast(error.message, 'error');

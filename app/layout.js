@@ -1,8 +1,6 @@
 import { Geist, Geist_Mono, Poppins } from "next/font/google";
 import "./globals.css";
-import Header from "@/components/Header";
-import MobileNav from "@/components/MobileNav";
-import { ToastProvider } from "@/providers/toast-provider";
+import AppShell from "@/components/AppShell";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -33,11 +31,7 @@ export default function RootLayout({ children }) {
         className={`${geistSans.variable} ${geistMono.variable} ${poppins.variable} antialiased`}
       >
         <main className="relative w-screen min-h-screen flex flex-col overflow-x-hidden">
-          <ToastProvider>
-            <Header />
-            {children}
-            <MobileNav />
-          </ToastProvider>
+          <AppShell>{children}</AppShell>
         </main>
       </body>
     </html>
