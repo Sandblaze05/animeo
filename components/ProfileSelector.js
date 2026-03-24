@@ -1,6 +1,7 @@
 "use client"
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
+import gsap from 'gsap'
 
 const COLORS = {
   bg: '#0b001f',
@@ -15,6 +16,10 @@ export default function ProfileSelector({ onSelect }) {
   const [avatar, setAvatar] = useState('');
   const [hoveredId, setHoveredId] = useState(null);
 
+  // Refs for our GSAP wave targets
+  const wave1Ref = useRef(null);
+  const wave2Ref = useRef(null);
+
   const fetchProfiles = async () => {
     const res = await fetch('/api/profiles');
     if (res.ok) setProfiles(await res.json());
@@ -22,6 +27,54 @@ export default function ProfileSelector({ onSelect }) {
 
   useEffect(() => {
     fetchProfiles();
+  }, []);
+
+  // GSAP Mouse Tracking Effect
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      const { clientX, clientY } = e;
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+
+      // Normalize X from -1 (left) to 1 (right)
+      const normX = (clientX / width - 0.5) * 2;
+      // Normalize Y from 0 (bottom) to 1 (top)
+      const normY = 1 - (clientY / height);
+
+      // 1. Move the wave center towards the mouse X (max 25% of screen width)
+      const moveX = normX * (width * 0.25);
+      
+      // 2. Skew it slightly so it "bends" towards the mouse like a flame
+      const skew = normX * -12; 
+      
+      // 3. Stretch it taller when the mouse is moving higher (base scale 1 + stretch)
+      const stretch = 1 + (normY * 0.6);
+
+      // Animate Primary Wave
+      gsap.to(wave1Ref.current, {
+        x: moveX,
+        skewX: skew,
+        scaleY: stretch,
+        duration: 1.5,
+        ease: "power2.out",
+        overwrite: 'auto',
+        transformOrigin: "center bottom"
+      });
+
+      // Animate Secondary Wave (slightly exaggerated for a parallax/layered effect)
+      gsap.to(wave2Ref.current, {
+        x: moveX * 1.3,
+        skewX: skew * 1.2,
+        scaleY: stretch * 1.15,
+        duration: 2.2,
+        ease: "power2.out",
+        overwrite: 'auto',
+        transformOrigin: "center bottom"
+      });
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    return () => window.removeEventListener("mousemove", handleMouseMove);
   }, []);
 
   const handleCreate = async (e) => {
@@ -56,12 +109,23 @@ export default function ProfileSelector({ onSelect }) {
       overflow: 'hidden',
       position: 'relative',
     }}>
-
-      {/* Google Font Import */}
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,600;1,9..40,300&family=Bebas+Neue&display=swap');
 
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+        @keyframes wave-glow {
+          0%, 100% {
+            opacity: 0.35;
+            transform: translateY(0) scaleY(1) scaleX(1);
+          }
+          50% {
+            opacity: 0.6;
+            transform: translateY(-30px) scaleY(1.15) scaleX(1.05);
+          }
+        }
+
+        .wave-glow {
+          animation: wave-glow 8s ease-in-out infinite;
+        }
 
         .profile-btn {
           background: none;
@@ -86,7 +150,6 @@ export default function ProfileSelector({ onSelect }) {
           position: absolute;
           inset: -3px;
           border-radius: 50%;
-          // background: conic-gradient(from 0deg, #e60076, #ff4db3, #0b001f, #e60076);
           opacity: 0;
           transition: opacity 0.3s ease;
           z-index: 0;
@@ -216,34 +279,46 @@ export default function ProfileSelector({ onSelect }) {
         }
       `}</style>
 
-      {/* Ambient glow blobs */}
-      <div style={{
+      {/* Main Pinkish Wave (CSS + GSAP combo) */}
+      <div className="wave-glow" style={{
         position: 'absolute',
-        top: '10%', left: '15%',
-        width: 420, height: 420,
-        background: 'radial-gradient(circle, rgba(230,0,118,0.12) 0%, transparent 70%)',
-        borderRadius: '50%',
+        bottom: '-100px',
+        left: '-10%',
+        right: '-10%',
+        height: '500px',
+        filter: 'blur(100px)',
         pointerEvents: 'none',
-        filter: 'blur(40px)',
-      }} />
-      <div style={{
-        position: 'absolute',
-        bottom: '15%', right: '10%',
-        width: 360, height: 360,
-        background: 'radial-gradient(circle, rgba(75,0,130,0.2) 0%, transparent 70%)',
-        borderRadius: '50%',
-        pointerEvents: 'none',
-        filter: 'blur(60px)',
-      }} />
+        zIndex: 0,
+      }}>
+        {/* GSAP Target Inner Div */}
+        <div ref={wave1Ref} style={{
+          width: '100%',
+          height: '100%',
+          background: 'radial-gradient(ellipse at center bottom, rgba(230, 0, 118, 0.5) 0%, rgba(230, 0, 118, 0.2) 30%, rgba(75, 0, 130, 0.1) 60%, transparent 80%)',
+          borderRadius: '50% 50% 0 0 / 150px 150px 0 0',
+        }} />
+      </div>
 
-      {/* Noise texture overlay */}
-      <div style={{
-        position: 'absolute', inset: 0,
-        backgroundImage: 'url("data:image/svg+xml,%3Csvg viewBox=\'0 0 200 200\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cfilter id=\'noise\'%3E%3CfeTurbulence type=\'fractalNoise\' baseFrequency=\'0.85\' numOctaves=\'4\' stitchTiles=\'stitch\'/%3E%3C/filter%3E%3Crect width=\'100%25\' height=\'100%25\' filter=\'url(%23noise)\' opacity=\'0.04\'/%3E%3C/svg%3E")',
-        backgroundSize: '200px 200px',
+      {/* Secondary Subtle Wave */}
+      <div className="wave-glow" style={{
+        position: 'absolute',
+        bottom: '-50px',
+        left: '-20%',
+        right: '-20%',
+        height: '350px',
+        filter: 'blur(80px)',
         pointerEvents: 'none',
-        opacity: 0.6,
-      }} />
+        zIndex: 0,
+        animationDelay: '-4s',
+      }}>
+         {/* GSAP Target Inner Div */}
+         <div ref={wave2Ref} style={{
+          width: '100%',
+          height: '100%',
+          background: 'radial-gradient(ellipse at center bottom, rgba(255, 77, 179, 0.3) 0%, rgba(230, 0, 118, 0.15) 40%, transparent 70%)',
+          borderRadius: '50% 50% 0 0 / 100px 100px 0 0',
+        }} />
+      </div>
 
       {/* Main card */}
       <motion.div
@@ -361,8 +436,8 @@ export default function ProfileSelector({ onSelect }) {
                 aria-label="Add profile"
               >
                 <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
-                  <line x1="11" y1="2" x2="11" y2="20" stroke="#e60076" strokeWidth="2.5" strokeLinecap="round"/>
-                  <line x1="2" y1="11" x2="20" y2="11" stroke="#e60076" strokeWidth="2.5" strokeLinecap="round"/>
+                  <line x1="11" y1="2" x2="11" y2="20" stroke="#e60076" strokeWidth="2.5" strokeLinecap="round" />
+                  <line x1="2" y1="11" x2="20" y2="11" stroke="#e60076" strokeWidth="2.5" strokeLinecap="round" />
                 </svg>
               </button>
             </div>

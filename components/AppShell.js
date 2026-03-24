@@ -29,8 +29,15 @@ export default function AppShell({ children }) {
   useEffect(() => {
     if (!isHydrated) return;
 
-    if (!isProfileRoute && !hasProfile) {
-      router.replace('/profiles');
+    // Read localStorage directly here to avoid a brief state-race
+    // where `hasProfile` may still be false while `isHydrated` is true.
+    try {
+      const profileId = localStorage.getItem('profileId');
+      if (!isProfileRoute && !profileId) {
+        router.replace('/profiles');
+      }
+    } catch {
+      if (!isProfileRoute) router.replace('/profiles');
     }
   }, [hasProfile, isHydrated, isProfileRoute, router]);
 

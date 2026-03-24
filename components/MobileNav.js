@@ -155,7 +155,10 @@ const MobileNav = () => {
     const activePill = selectedPillRef.current;
     if (!nav || !activePill) return;
 
-    const targetLink = nav.querySelector(`a[href='${pathname}']`);
+    // Avoid building a raw CSS selector from untrusted `pathname` (can contain
+    // characters like apostrophes) — instead compare `href` attributes.
+    const links = Array.from(nav.querySelectorAll('a'));
+    const targetLink = links.find(a => a.getAttribute('href') === pathname);
 
     if (targetLink) {
       gsap.to(activePill, {
