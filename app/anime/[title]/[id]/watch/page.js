@@ -1,12 +1,13 @@
 import React, { Suspense } from 'react'
-import DetailsDisplay from '@/components/DetailsDisplay';
+import WatchPage from './WatchPage';
 
 const page = async ({ params }) => {
+
   const { title, id } = await params;
 
   return (
-    <Suspense fallback={<>Loading...</>}>
-      <DetailsDisplay initialTitle={title} initialId={id} />
+    <Suspense fallback={<></>}>
+      <WatchPage title={title} id={id} />
     </Suspense>
   )
 }

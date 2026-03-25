@@ -55,7 +55,7 @@ export default function ProfileSelector({ onSelect }) {
         x: moveX,
         skewX: skew,
         scaleY: stretch,
-        duration: 1.5,
+        duration: 2,
         ease: "power2.out",
         overwrite: 'auto',
         transformOrigin: "center bottom"
@@ -66,7 +66,7 @@ export default function ProfileSelector({ onSelect }) {
         x: moveX * 1.3,
         skewX: skew * 1.2,
         scaleY: stretch * 1.15,
-        duration: 2.2,
+        duration: 3,
         ease: "power2.out",
         overwrite: 'auto',
         transformOrigin: "center bottom"

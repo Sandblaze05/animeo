@@ -1,9 +1,11 @@
 'use client'
 
-import React from 'react'
+import React, { useState } from 'react'
 import { motion } from 'motion/react'
 import { PlayIcon, PlusIcon } from 'lucide-react'
 import { useRouter } from 'next/navigation'
+import { useToast } from '@/providers/toast-provider'
+import { addAnimeToDefaultList } from '@/app/actions'
 
 const containerVariants = {
   hidden: {},
@@ -29,6 +31,22 @@ const itemVariants = {
 
 const SeasonFlyCard = ({ anime, color, isOnLeft = false }) => {
   const router = useRouter();
+  const { toast } = useToast();
+  const [addingToList, setAddingToList] = useState(false);
+
+  const handleAddToList = async (animeData) => {
+    if (addingToList) return;
+    setAddingToList(true);
+    try {
+      const profileId = typeof window !== 'undefined' ? localStorage.getItem('profileId') : null;
+      await addAnimeToDefaultList(animeData, profileId || undefined);
+      toast('Added to your list!', 'success');
+    } catch (error) {
+      toast(error?.message || 'Unable to add to list', 'error');
+    } finally {
+      setAddingToList(false);
+    }
+  };
   return (
     <motion.div
       variants={containerVariants}
@@ -74,7 +92,7 @@ const SeasonFlyCard = ({ anime, color, isOnLeft = false }) => {
           <motion.div
             whileTap={{ x: 4, y: 4 }}
             style={{ border: `1px solid ${color}` }}
-            onClick={() => router.push(`/anime/${anime.title}/${anime.id}`)}
+            onClick={() => router.push(`/anime/${encodeURIComponent(anime.title)}/${anime.id}`)}
             className='relative h-full w-full bg-[#0b001f] flex items-center justify-center text-xs z-20'
           >
             <PlayIcon size={20} stroke={color} />
@@ -87,7 +105,8 @@ const SeasonFlyCard = ({ anime, color, isOnLeft = false }) => {
           <motion.div
             whileTap={{ x: 4, y: 4 }}
             style={{ border: `1px solid ${color}` }}
-            className='relative h-full w-full bg-[#0b001f] flex items-center justify-center text-xs z-20'
+            onClick={() => handleAddToList(anime)}
+            className={`relative h-full w-full bg-[#0b001f] flex items-center justify-center text-xs z-20 ${addingToList ? 'opacity-60 pointer-events-none' : ''}`}
           >
             <PlusIcon size={20} fill={color} stroke={color} />
           </motion.div>

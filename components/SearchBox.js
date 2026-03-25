@@ -90,6 +90,25 @@ const SearchBox = ({ onClose }) => {
     return () => window.removeEventListener('keydown', handleArrowInput);
   }, [suggestionData, inputFocus]);
 
+  // Handle Enter when a suggestion is focused even if the input is blurred
+  useEffect(() => {
+    const handleEnterOnSuggestion = (e) => {
+      if (e.key !== 'Enter') return;
+      // let the input's onKeyDown handle Enter when the input is focused
+      if (document.activeElement === inputRef.current) return;
+
+      if (focusedSuggestion !== null && suggestionData?.[focusedSuggestion]) {
+        e.preventDefault();
+        const anime = suggestionData[focusedSuggestion];
+        onClose();
+        router.push(`/anime/${encodeURIComponent(anime.title)}/${anime.mal_id}`);
+      }
+    };
+
+    window.addEventListener('keydown', handleEnterOnSuggestion);
+    return () => window.removeEventListener('keydown', handleEnterOnSuggestion);
+  }, [focusedSuggestion, suggestionData, onClose, router]);
+
   const fetchQuery = async (query) => {
     const now = Date.now();
 
@@ -142,7 +161,17 @@ const SearchBox = ({ onClose }) => {
   }, [query]);
 
   useEffect(() => {
-    if (focusedSuggestion === null || !highlightRef.current) return;
+    if (!highlightRef.current) return;
+
+    // Hide the pill when nothing is focused
+    if (focusedSuggestion === null) {
+      gsap.to(highlightRef.current, {
+        opacity: 0,
+        duration: 0.18,
+        ease: 'power2.out'
+      });
+      return;
+    }
 
     const top = focusedSuggestion * ITEM_HEIGHT;
 
@@ -197,12 +226,19 @@ const SearchBox = ({ onClose }) => {
             value={query}
             ref={inputRef}
             onChange={(e) => setQuery(e.target.value)}
-            onFocus={() => setInputFocus(true)}
+            onFocus={() => { setInputFocus(true); setFocusedSuggestion(null); }}
             onBlur={() => setInputFocus(false)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
-                onClose();
-                router.push(`/anime/${encodeURIComponent(query)}`);
+                // If a suggestion is focused, go to that anime's page
+                if (focusedSuggestion !== null && suggestionData?.[focusedSuggestion]) {
+                  const anime = suggestionData[focusedSuggestion];
+                  onClose();
+                  router.push(`/anime/${encodeURIComponent(anime.title)}/${anime.mal_id}`);
+                } else {
+                  onClose();
+                  router.push(`/anime/${encodeURIComponent(query)}`);
+                }
               }
             }}
             autoFocus
@@ -236,6 +272,7 @@ const SearchBox = ({ onClose }) => {
                   style={{
                     color: idx === focusedSuggestion ? 'black' : 'inherit',
                   }}
+                  onClick={() => {onClose();router.push(`/anime/${encodeURIComponent(anime.title)}/${anime.mal_id}`);}}
                 >
                   <div className='flex flex-col justify-center items-start gap-1 max-w-[80%]'>
                     <span className='line-clamp-1'>{anime.title}</span>

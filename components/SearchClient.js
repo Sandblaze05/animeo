@@ -1,11 +1,76 @@
 'use client'
 
 import { useToast } from '@/providers/toast-provider';
-import { Star, PlusIcon, PlayIcon, Grid2X2Icon, ListIcon, Loader2, ChevronRight, ChevronLeft } from 'lucide-react';
+import { 
+  Star, PlusIcon, PlayIcon, Grid2X2Icon, ListIcon, 
+  Loader2, ChevronRight, ChevronLeft, MousePointerClick, Filter, ChevronDown
+} from 'lucide-react';
 import React, { useState, useEffect, useRef } from 'react';
 import Image from 'next/image';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
+import { addAnimeToDefaultList } from '@/app/actions';
 
+// --- Custom Animated Dropdown Component ---
+const AnimatedDropdown = ({ value, onChange, options, placeholder }) => {
+  const [isOpen, setIsOpen] = useState(false);
+
+  const selectedLabel = options.find(opt => opt.value === value)?.label || placeholder;
+
+  return (
+    <div className="relative">
+      {/* Button */}
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center justify-between gap-2 bg-white/10 hover:bg-white/15 border-1 border-white/20 rounded-xl px-4 py-2 text-sm text-white transition-colors w-36"
+      >
+        <span className="truncate">{selectedLabel}</span>
+        <motion.div animate={{ rotate: isOpen ? 180 : 0 }} transition={{ duration: 0.2 }}>
+          <ChevronDown className="w-4 h-4 text-white/50" />
+        </motion.div>
+      </button>
+
+      {/* Invisible overlay to close dropdown when clicking outside */}
+      {isOpen && (
+        <div 
+          className="fixed inset-0 z-40" 
+          onClick={() => setIsOpen(false)} 
+        />
+      )}
+
+      {/* Animated Dropdown Menu */}
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            initial={{ opacity: 0, y: -10, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -10, scale: 0.95 }}
+            transition={{ duration: 0.15, ease: "easeOut" }}
+            className="absolute top-full left-0 mt-2 w-full z-50 bg-[#150a2b] border-1 border-white/20 rounded-xl shadow-2xl shadow-black/50 overflow-hidden flex flex-col p-1"
+          >
+            {options.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => {
+                  onChange(opt.value);
+                  setIsOpen(false);
+                }}
+                className={`w-full text-left px-3 py-2 text-sm rounded-lg transition-colors ${
+                  value === opt.value 
+                    ? 'bg-pink-600/20 text-pink-400 font-medium' 
+                    : 'text-white/80 hover:bg-white/10 hover:text-white'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
+// --- Main Search Client Component ---
 const SearchClient = ({ title, initialData, initialPagination }) => {
   const { toast } = useToast();
 
@@ -16,7 +81,55 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
   const [selectedEntry, setSelectedEntry] = useState(null);
   const [isExpanded, setIsExpanded] = useState(false);
   const [showReadMore, setShowReadMore] = useState(false);
+  const [addingToList, setAddingToList] = useState(false);
+
+  // --- Filter States ---
+  const [typeFilter, setTypeFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [orderBy, setOrderBy] = useState('');
+  const [sort, setSort] = useState('desc');
+  
   const synopsisRef = useRef(null);
+  const pageCache = useRef({});
+  const isFirstRender = useRef(true);
+
+  // Filter Option Definitions
+  const typeOptions = [
+    { label: 'All Types', value: '' },
+    { label: 'TV', value: 'tv' },
+    { label: 'Movie', value: 'movie' },
+    { label: 'OVA', value: 'ova' },
+    { label: 'Special', value: 'special' },
+  ];
+
+  const statusOptions = [
+    { label: 'All Statuses', value: '' },
+    { label: 'Airing', value: 'airing' },
+    { label: 'Complete', value: 'complete' },
+    { label: 'Upcoming', value: 'upcoming' },
+  ];
+
+  const sortOptions = [
+    { label: 'Default Sort', value: '' },
+    { label: 'Score', value: 'score' },
+    { label: 'Popularity', value: 'popularity' },
+    { label: 'Release Date', value: 'start_date' },
+  ];
+
+  const orderOptions = [
+    { label: 'Descending', value: 'desc' },
+    { label: 'Ascending', value: 'asc' },
+  ];
+
+  useEffect(() => {
+    pageCache.current = {};
+    if (initialData && initialPagination?.current_page) {
+      pageCache.current[initialPagination.current_page] = {
+        data: initialData,
+        pagination: initialPagination
+      };
+    }
+  }, [title, initialData, initialPagination]);
 
   useEffect(() => {
     if (synopsisRef.current) {
@@ -24,58 +137,77 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
     }
   }, [selectedEntry, listOfAnime]);
 
+  const buildApiUrl = (page = 1) => {
+    let url = `https://api.jikan.moe/v4/anime?q=${title}&limit=20&page=${page}`;
+    if (typeFilter) url += `&type=${typeFilter}`;
+    if (statusFilter) url += `&status=${statusFilter}`;
+    if (orderBy) {
+      url += `&order_by=${orderBy}&sort=${sort}`;
+    }
+    return url;
+  };
+
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    
+    pageCache.current = {};
+    setSelectedEntry(null); 
+    goToPage(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typeFilter, statusFilter, orderBy, sort]);
+
   const buttonVariants = {
     initial: { gap: "0px" },
     hover: { gap: "8px" },
   };
 
   const iconVariants = {
-    initial: {
-      width: 0,
-      opacity: 0,
-      transition: { duration: 0.2 },
-    },
-    hover: {
-      width: "20px",
-      opacity: 1,
-      transition: { duration: 0.2, delay: 0.1 },
-    },
+    initial: { width: 0, opacity: 0, transition: { duration: 0.2 } },
+    hover: { width: "20px", opacity: 1, transition: { duration: 0.2, delay: 0.1 } },
   };
 
-  const loadMore = async () => {
-    if (!pagination.has_next_page) return;
+  const handleAddToList = async (animeData) => {
+    if (addingToList) return;
 
-    setIsLoadingMore(true);
-    const nextPage = (pagination.current_page || 1) + 1;
-
+    setAddingToList(true);
     try {
-      const response = await fetch(`https://api.jikan.moe/v4/anime?q=${title}&limit=20&page=${nextPage}`);
-      if (!response.ok) {
-        toast('Error fetching more data', 'error');
-        return;
-      }
-      const data = await response.json();
-      setListOfAnime(prev => [...prev, ...data.data]);
-      setPagination(data.pagination);
-    } catch (err) {
-      toast(`${err.message}`, 'error');
+      const profileId = typeof window !== 'undefined' ? localStorage.getItem('profileId') : null;
+      await addAnimeToDefaultList(animeData, profileId || undefined);
+      toast('Added to your list!', 'success');
+    } catch (error) {
+      toast(error?.message || 'Unable to add to list', 'error');
     } finally {
-      setIsLoadingMore(false);
+      setAddingToList(false);
     }
   };
 
   const goToPage = async (page) => {
-    if (page < 1 || page > pagination.last_visible_page) return;
+    if (page < 1) return;
+
+    if (pageCache.current[page]) {
+      setListOfAnime(pageCache.current[page].data);
+      setPagination(pageCache.current[page].pagination);
+      return; 
+    }
 
     setIsLoadingMore(true);
 
     try {
-      const response = await fetch(`https://api.jikan.moe/v4/anime?q=${title}&limit=20&page=${page}`);
+      const response = await fetch(buildApiUrl(page));
       if (!response.ok) {
         toast('Error fetching data', 'error');
         return;
       }
       const data = await response.json();
+      
+      pageCache.current[page] = {
+        data: data.data,
+        pagination: data.pagination
+      };
+
       setListOfAnime(data.data);
       setPagination(data.pagination);
     } catch (err) {
@@ -87,15 +219,56 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
 
   return (
     <div className='mt-20 border-t-1 border-white/20 w-screen flex flex-col text-white'>
-      <div className='w-screen h-20 flex items-center px-4'>
-        <h2 className='text-xl font-bold text-white flex'>Search:&ensp;<span className='text-lg font-normal'>{decodeURIComponent(title)}</span></h2>
+      <div className='w-screen h-16 flex items-center px-4'>
+        <h2 className='text-xl font-bold text-white flex items-center'>Search:&ensp;<span className='text-lg font-normal'>{decodeURIComponent(title)}</span></h2>
       </div>
 
-      <div className='w-screen flex'>
+      {/* --- Updated Filter Bar --- */}
+      <div className='w-full px-4 py-3 flex flex-wrap gap-3 items-center border-b-1 border-t-1 border-white/10 bg-[#0b001f]/30 backdrop-blur-md z-20 relative'>
+        <Filter className='w-4 h-4 text-white/50' />
+        <span className='text-sm font-medium text-white/50 mr-2'>Filters:</span>
+
+        <AnimatedDropdown 
+          value={typeFilter} 
+          onChange={setTypeFilter} 
+          options={typeOptions} 
+          placeholder="All Types" 
+        />
+
+        <AnimatedDropdown 
+          value={statusFilter} 
+          onChange={setStatusFilter} 
+          options={statusOptions} 
+          placeholder="All Statuses" 
+        />
+
+        <AnimatedDropdown 
+          value={orderBy} 
+          onChange={setOrderBy} 
+          options={sortOptions} 
+          placeholder="Default Sort" 
+        />
+
+        {/* Only show Asc/Desc if a sort property is selected */}
+        {orderBy && (
+          <AnimatedDropdown 
+            value={sort} 
+            onChange={setSort} 
+            options={orderOptions} 
+            placeholder="Order" 
+          />
+        )}
+        
+        {isLoadingMore && (
+           <Loader2 className="w-4 h-4 text-pink-500 animate-spin ml-auto" />
+        )}
+      </div>
+
+      <div className='w-screen flex z-10'>
         {/* Result container */}
         <div
           className='relative flex flex-col items-center justify-start w-screen lg:w-[70%] 
-          h-screen rounded-none border-r-0 lg:rounded-tr-xl border-t-1 
+          h-[calc(100vh-140px)] rounded-none border-r-0 lg:rounded-tr-xl border-t-1 
           lg:border-r-1 border-white/20'
           >
           {/* Header of search results */}
@@ -106,7 +279,7 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
 
             {/* Layout toggle */}
             <div className='relative flex p-1 rounded-md items-center justify-center border-1 border-white/40 gap-2'>
-              <Grid2X2Icon onClick={() => setLayoutType('grid')} style={{ color: layoutType === 'grid' ? 'black' : 'grey' }} className='h-5 w-5 z-1 transition-colors' />
+              <Grid2X2Icon onClick={() => setLayoutType('grid')} style={{ color: layoutType === 'grid' ? 'black' : 'grey' }} className='h-5 w-5 z-1 transition-colors cursor-pointer' />
               <div
                 style={{
                   transform: layoutType === 'grid' ? 'translateX(-50%)' : 'translateX(50%)',
@@ -118,12 +291,18 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
                 className='absolute h-full w-[50%] bg-white -z-1 transition-all'
               />
               <div className='absolute top-1/2 left-1/2 -translate-1/2 h-full w-[1px] bg-white/20' />
-              <ListIcon onClick={() => setLayoutType('list')} style={{ color: layoutType !== 'grid' ? 'black' : 'grey' }} className='h-5 w-5 z-1 transition-colors' />
+              <ListIcon onClick={() => setLayoutType('list')} style={{ color: layoutType !== 'grid' ? 'black' : 'grey' }} className='h-5 w-5 z-1 transition-colors cursor-pointer' />
             </div>
           </div>
 
           {/* Main results */}
           <div className='flex flex-wrap scrollbar-hide scroll-smooth content-start gap-4 overflow-x-hidden overflow-y-scroll px-4 pb-6 pt-14 w-full h-full lg:rounded-tr-xl rounded-none'>
+            {listOfAnime?.length === 0 && !isLoadingMore && (
+               <div className="w-full h-40 flex items-center justify-center text-white/50">
+                 No results found for these filters.
+               </div>
+            )}
+            
             {listOfAnime?.map((anime, i) => (
               <div
                 key={`${anime.mal_id}-${i}`}
@@ -171,13 +350,11 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
                   const pageNum = idx + 1;
                   const currentPage = pagination.current_page || 1;
 
-                  // Show first page, last page, current page, and pages around current
                   const shouldShow =
                     pageNum === 1 ||
                     pageNum === pagination.last_visible_page ||
                     Math.abs(pageNum - currentPage) <= 1;
 
-                  // Show ellipsis
                   const showEllipsisBefore = pageNum === currentPage - 2 && pageNum > 1;
                   const showEllipsisAfter = pageNum === currentPage + 2 && pageNum < pagination.last_visible_page;
 
@@ -216,10 +393,22 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
             )}
           </div>
         </div>
-        {/* Side content - visisble only on desktop */}
+
+        {/* Side content - visible only on desktop */}
+        {selectedEntry === null && (
+          <div className='lg:flex flex-col lg:flex-1 hidden h-[calc(100vh-140px)] justify-center items-center p-6'>
+            <div className='flex flex-col items-center justify-center w-full h-[80%] max-h-[600px] border-2 border-dashed border-white/10 rounded-2xl bg-white/5'>
+              <MousePointerClick className='w-12 h-12 text-white/20 mb-4' />
+              <p className='text-white/40 font-medium text-center px-4'>
+                Select an anime from the list<br/>to view details
+              </p>
+            </div>
+          </div>
+        )}
+
         {selectedEntry !== null && (
-          <div className='lg:flex flex-col lg:flex-1 hidden p-4 justify-start items-center gap-3'>
-            <div className='relative border-1 border-white/20 rounded-xl aspect-[9/16] h-60 w-40'>
+          <div className='lg:flex flex-col lg:flex-1 hidden p-4 justify-start items-center gap-3 h-[calc(100vh-140px)] overflow-y-auto'>
+            <div className='relative border-1 border-white/20 rounded-xl aspect-[9/16] h-60 w-40 mt-4 shrink-0'>
               <Image
                 src={listOfAnime[selectedEntry].images.webp.large_image_url}
                 alt={listOfAnime[selectedEntry].title}
@@ -232,7 +421,7 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
               </h1>
             </div>
 
-            <div className='flex gap-2 items-center justify-center text-xs text-white/40 mt-1'>
+            <div className='flex gap-2 items-center justify-center text-xs text-white/40 mt-1 shrink-0'>
               <span className='flex items-center justify-around gap-1 font-bold'><Star className='text-white/40 fill-white/40 inline-block h-3 w-3' />{listOfAnime[selectedEntry].score}</span>
               |
               <span className='font-bold'>{listOfAnime[selectedEntry].type}</span>
@@ -240,24 +429,25 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
               <span
                 className='rounded-md font-bold bg-white/40 text-black flex items-center justify-center px-1'
               >
-                {listOfAnime[selectedEntry].rating.match(/^[A-Za-z0-9+-]+/)[0]}
+                {listOfAnime[selectedEntry].rating ? listOfAnime[selectedEntry].rating.match(/^[A-Za-z0-9+-]+/)[0] : 'N/A'}
               </span>
             </div>
 
             {/* Buttons */}
-            <div className='h-10 w-[80%] mx-auto flex flex-row-reverse gap-2 items-center justify-center mt-2'>
+            <div className='h-10 w-[80%] mx-auto flex flex-row-reverse gap-2 items-center justify-center mt-2 shrink-0'>
               <motion.button
                 initial="initial"
                 whileHover="hover"
                 whileTap={{ scale: 0.95, y: 1 }}
                 variants={buttonVariants}
-                onClick={() => toast('Adding to list', 'info')}
-                className="flex items-center px-5 py-2.5 bg-pink-600 rounded-full font-semibold hover:bg-pink-500 transition-colors"
+                onClick={() => handleAddToList(listOfAnime[selectedEntry])}
+                disabled={addingToList}
+                className="flex items-center px-5 py-2.5 bg-pink-600 rounded-full font-semibold hover:bg-pink-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <motion.div variants={iconVariants} className="overflow-hidden">
                   <PlusIcon className="w-5 h-5" />
                 </motion.div>
-                <span>Add to List</span>
+                <span>{addingToList ? 'Adding...' : 'Add to List'}</span>
               </motion.button>
               <motion.button
                 initial="initial"
@@ -273,7 +463,7 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
               </motion.button>
             </div>
 
-            <div className='relative h-fit w-full px-2'>
+            <div className='relative h-fit w-full px-2 shrink-0'>
               <div className='absolute top-2 left-5 bg-white border-1 border-white/40 rounded-md px-1 z-10'>
                 <span className='text-xs text-black font-bold'>Synopsis</span>
               </div>
@@ -292,7 +482,7 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
                     ref={synopsisRef}
                     className='text-sm tracking-wide leading-6 px-3 pt-6 pb-10 w-full text-white/80'
                   >
-                    {listOfAnime[selectedEntry].synopsis}
+                    {listOfAnime[selectedEntry].synopsis || 'No synopsis available.'}
                   </div>
                 </div>
 

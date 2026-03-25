@@ -4,8 +4,11 @@ import { useRef } from 'react';
 import Image from "next/image";
 import { StarIcon } from "lucide-react";
 import { animate, motion, useMotionValue, useTransform } from 'motion/react';
+import { useRouter } from 'next/navigation';
 
 export default function ParallaxCoverImage({ animeData }) {
+  const router = useRouter();
+
   const cardRef = useRef(null);
 
   const x = useMotionValue(0);
@@ -40,6 +43,7 @@ export default function ParallaxCoverImage({ animeData }) {
         transformStyle: "preserve-3d",
       }}
       whileTap={{ scale: 0.95 }}
+      onClick={() => router.push(`/anime/${animeData.title}/${animeData.id}`)}
       className="hidden md:block flex-shrink-0 w-56 -mb-4 cursor-pointer"
     >
       <div
