@@ -4,9 +4,6 @@ import SearchClientSkeleton from '@/components/Skeletons/SearchClientSkeleton';
 
 const page = async ({ params }) => {
   const { title } = await  params;
-  
-  
-
   return (
     <Suspense fallback={<SearchClientSkeleton/>}>
       <SearchData title={title}  />

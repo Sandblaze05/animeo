@@ -6,7 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { motion } from 'motion/react'
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import Image from "next/image"
+// replaced next/image with native img
 import SearchBox from "./SearchBox"
 
 const Header = () => {
@@ -254,7 +254,7 @@ const Header = () => {
         whileTap={{ scaleX: 0.95, scaleY: 0.9 }}
         aria-label="menu"
         className="fixed left-7 top-5 p-2 h-12 w-12 flex items-center justify-center 
-        rounded-full bg-black/20 border-white/20 border-1 shadow-2xl backdrop-blur-lg"
+        rounded-full bg-black/20 border-white/20 border shadow-2xl backdrop-blur-lg"
       >
         <svg width="30px" height="30px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M4 18H10" stroke="#FFF" strokeWidth="2" strokeLinecap="round" />
@@ -269,17 +269,15 @@ const Header = () => {
           whileTap={{ scaleX: 0.95, scaleY: 0.9 }}
           aria-label="profile"
           className="h-12 w-12 flex items-center justify-center 
-          rounded-full bg-black/20 border-white/20 border-1 
+          rounded-full bg-black/20 border-white/20 border 
           shadow-2xl backdrop-blur-lg cursor-pointer"
         >
           {currentProfile.avatar ? (
             <div className="h-10 w-10 rounded-full overflow-hidden relative">
-              <Image
+              <img
                 src={currentProfile.avatar}
                 alt={currentProfile.name}
-                fill
-                sizes="40px"
-                className="object-cover"
+                className="object-cover w-full h-full"
               />
             </div>
           ) : (
@@ -293,12 +291,10 @@ const Header = () => {
             <div className="flex flex-col gap-3 text-white px-4 py-3 w-full items-center">
               <div className="h-14 w-14 rounded-full overflow-hidden relative border border-white/20 bg-white/10 flex items-center justify-center">
                 {currentProfile.avatar ? (
-                  <Image
+                  <img
                     src={currentProfile.avatar}
                     alt={currentProfile.name}
-                    fill
-                    sizes="56px"
-                    className="object-cover"
+                    className="object-cover w-full h-full"
                   />
                 ) : (
                   <span className="text-base font-semibold">{currentProfile.name.charAt(0).toUpperCase()}</span>
@@ -321,7 +317,7 @@ const Header = () => {
 
       <header
         ref={headerRef}
-        className="fixed top-5 left-1/2 -translate-x-1/2 overflow-hidden hidden w-[456px] h-10 border-[1px] border-white/20 backdrop-blur-lg bg-black/20 sm:flex justify-between gap-3 items-center rounded-full shadow-2xl p-1 font-semibold z-[9999]"
+        className="fixed top-5 left-1/2 -translate-x-1/2 overflow-hidden hidden w-114 h-10 border border-white/20 backdrop-blur-lg bg-black/20 sm:flex justify-between gap-3 items-center rounded-full shadow-2xl p-1 font-semibold z-9999"
       >
 
         <div ref={activePillRef} className="absolute left-0 h-[calc(100%-0.5rem)] w-0 bg-white/40 rounded-full opacity-0 -z-10"></div>

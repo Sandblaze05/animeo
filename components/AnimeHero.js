@@ -1,19 +1,23 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react';
-import Image from "next/image";
+// replaced next/image with native img
 import { PlayIcon, PlusIcon } from "lucide-react";
 import { motion } from 'motion/react';
 import { useToast } from '@/providers/toast-provider';
+import { useRouter } from 'next/navigation';
 import ParallaxCoverImage from './ParallaxCoverImage';
 import { addAnimeToDefaultList } from '@/app/actions';
 
 export default function AnimeHero({ animeList }) {
   const { toast } = useToast();
+  const router = useRouter();
 
   const [activeIndex, setActiveIndex] = useState(0);
   const [isUserInteracting, setIsUserInteracting] = useState(false);
   const [addingToList, setAddingToList] = useState(false);
+  const [optimisticAdded, setOptimisticAdded] = useState([]);
+  const addingRef = useRef(false);
 
   const scrollContainerRef = useRef(null);
   const interactionTimeoutRef = useRef(null);
@@ -83,16 +87,28 @@ export default function AnimeHero({ animeList }) {
   }
 
   const handleAddToList = async (animeData) => {
-    if (addingToList) return;
-    
+    if (addingRef.current) return;
+    const id = animeData.id || animeData.mal_id || animeData.title;
+    if (optimisticAdded.includes(id)) {
+      toast('Already added', 'info');
+      return;
+    }
+
+    // optimistic update
+    addingRef.current = true;
+    setOptimisticAdded(prev => [...prev, id]);
     setAddingToList(true);
+    toast('Added to your list!', 'success');
     try {
       const profileId = typeof window !== 'undefined' ? localStorage.getItem('profileId') : null;
       await addAnimeToDefaultList(animeData, profileId || undefined);
-      toast('Added to your list!', 'success');
+      try { router.refresh(); } catch (e) { /* ignore */ }
     } catch (error) {
-      toast(error.message, 'error');
+      // rollback optimistic
+      setOptimisticAdded(prev => prev.filter(x => x !== id));
+      toast(error.message || 'Unable to add to list', 'error');
     } finally {
+      addingRef.current = false;
       setAddingToList(false);
     }
   };
@@ -140,32 +156,28 @@ export default function AnimeHero({ animeList }) {
             <section
               key={animeData.title}
               data-index={index}
-              className="relative min-w-full h-full text-white snap-center flex-shrink-0 overflow-visible"
+              className="relative min-w-full h-full text-white snap-center shrink-0 overflow-visible"
             >
               {/* Mobile: Show cover image as background */}
-              <Image
+              <img
                 src={animeData.coverImage}
                 alt={`${animeData.title} cover`}
-                className="md:hidden object-cover brightness-70"
-                fill
-                priority={index === 0}
+                className="md:hidden object-cover brightness-70 absolute inset-0 w-full h-full"
               />
               {/* Desktop: Show banner image as background */}
-              <Image
+              <img
                 src={animeData.bannerImage}
                 alt={`${animeData.title} banner`}
-                className="hidden md:block object-cover brightness-50"
-                fill
-                priority={index === 0}
+                className="hidden md:block object-cover brightness-50 absolute inset-0 w-full h-full"
               />
-              <div className="absolute inset-0 bg-gradient-to-t from-[rgb(11,0,31)]/90 via-[rgb(11,0,31)]/50 to-transparent" />
+              <div className="absolute inset-0 bg-linear-to-t from-[rgb(11,0,31)]/90 via-[rgb(11,0,31)]/50 to-transparent" />
               <div className="relative h-full flex items-end p-4 sm:p-8 md:p-12 overflow-visible">
-                <div className="w-full flex flex-col md:flex-row items-center md:items-end gap-6 [perspective:1000px]">
+                <div className="w-full flex flex-col md:flex-row items-center md:items-end gap-6 perspective-[1000px]">
                   {/* COVER IMAGE */}
                   <ParallaxCoverImage animeData={animeData} />
                   {/* TEXT & ACTION CONTENT */}
                   <div className="flex flex-col items-center md:items-start gap-4 text-center md:text-left">
-                    <h1 className="text-5xl font-extrabold tracking-tighter text-balance max-w-[300px] md:max-w-[70svw] line-clamp-4 sm:line-clamp-2">
+                    <h1 className="text-5xl font-extrabold tracking-tighter text-balance max-w-75 md:max-w-[70svw] line-clamp-4 sm:line-clamp-2">
                       {animeData.title}
                     </h1>
                     <div className="flex flex-wrap justify-center md:justify-start items-center gap-2 text-sm">
@@ -184,7 +196,7 @@ export default function AnimeHero({ animeList }) {
                         whileTap={{ scale: 0.95, y: 1 }}
                         variants={buttonVariants}
                         onClick={() => handleAddToList(animeData)}
-                        disabled={addingToList}
+                        disabled={addingToList || optimisticAdded.includes(animeData.id || animeData.mal_id || animeData.title)}
                         className="sm:flex hidden items-center px-5 py-2.5 bg-pink-600 rounded-full font-semibold hover:bg-pink-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <motion.div variants={iconVariants} className="overflow-hidden">
@@ -208,7 +220,7 @@ export default function AnimeHero({ animeList }) {
                       <motion.button
                         whileTap={{ scale: 0.95, y: 1 }}
                         onClick={() => handleAddToList(animeData)}
-                        disabled={addingToList}
+                        disabled={addingToList || optimisticAdded.includes(animeData.id || animeData.mal_id || animeData.title)}
                         className="sm:hidden flex items-center gap-2 px-5 py-2.5 bg-pink-600 rounded-full font-semibold hover:bg-pink-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <PlusIcon className="w-5 h-5" />

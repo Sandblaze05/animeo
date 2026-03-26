@@ -53,7 +53,7 @@ export async function GET() {
     const movieItems = allMovies
       .map(anime => {
         const description = anime.description
-          ? anime.description.replace(/<br\s*\/?>/gi, ' ').substring(0, 180) + '...'
+          ? anime.description.replace(/<br\s*\/?/gi, ' ').substring(0, 180) + '...'
           : 'No description available.';
 
         return {
@@ -70,9 +70,7 @@ export async function GET() {
       });
 
     return NextResponse.json(movieItems, {
-      headers: {
-        'Cache-Control': 'public, max-age=3600, stale-while-revalidate=60'
-      }
+      headers: { 'Cache-Control': 'public, max-age=3600, stale-while-revalidate=60' }
     });
   }
   catch (err) {

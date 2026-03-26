@@ -2,6 +2,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
 import gsap from 'gsap'
+import { getProfiles, createProfile } from '../app/actions';
 
 const COLORS = {
   bg: '#0b001f',
@@ -21,8 +22,22 @@ export default function ProfileSelector({ onSelect }) {
   const wave2Ref = useRef(null);
 
   const fetchProfiles = async () => {
-    const res = await fetch('/api/profiles');
-    if (res.ok) setProfiles(await res.json());
+    try {
+      const p = await getProfiles();
+      setProfiles(p || []);
+      return;
+    } catch (e) {
+      console.error('getProfiles failed', e && e.message);
+      try {
+        if (window?.animeo?.db?.getProfiles) {
+          const profiles = await window.animeo.db.getProfiles();
+          setProfiles(profiles || []);
+          return;
+        }
+      } catch (err) {
+        console.error('IPC fallback getProfiles failed', err && err.message);
+      }
+    }
   }
 
   useEffect(() => {
@@ -79,14 +94,23 @@ export default function ProfileSelector({ onSelect }) {
 
   const handleCreate = async (e) => {
     e.preventDefault();
-    const res = await fetch('/api/profiles', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, avatar: avatar || null }),
-    });
-    if (res.ok) {
+    try {
+      await createProfile(name, avatar || null);
       setName(''); setAvatar(''); setShowForm(false);
       fetchProfiles();
+      return;
+    } catch (e) {
+      console.error('createProfile failed', e && e.message);
+      try {
+        if (window?.animeo?.db?.createProfile) {
+          await window.animeo.db.createProfile(name, avatar || null);
+          setName(''); setAvatar(''); setShowForm(false);
+          fetchProfiles();
+          return;
+        }
+      } catch (err) {
+        console.error('IPC fallback createProfile failed', err && err.message);
+      }
     }
   }
 

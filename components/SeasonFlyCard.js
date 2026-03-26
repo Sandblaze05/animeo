@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useState, useRef } from 'react'
 import { motion } from 'motion/react'
 import { PlayIcon, PlusIcon } from 'lucide-react'
 import { useRouter } from 'next/navigation'
@@ -30,20 +30,35 @@ const itemVariants = {
 }
 
 const SeasonFlyCard = ({ anime, color, isOnLeft = false }) => {
-  const router = useRouter();
   const { toast } = useToast();
   const [addingToList, setAddingToList] = useState(false);
+  const addingRef = useRef(false);
+  const router = useRouter();
+  const [optimisticAddedIds, setOptimisticAddedIds] = useState([]);
 
   const handleAddToList = async (animeData) => {
-    if (addingToList) return;
+    if (addingRef.current) return;
+    addingRef.current = true;
     setAddingToList(true);
+    const id = animeData.id || animeData.mal_id || animeData.title;
+    if (optimisticAddedIds.includes(id)) {
+      toast('Already added', 'info');
+      addingRef.current = false;
+      setAddingToList(false);
+      return;
+    }
+
+    setOptimisticAddedIds(prev => [...prev, id]);
+    toast('Added to your list!', 'success');
     try {
       const profileId = typeof window !== 'undefined' ? localStorage.getItem('profileId') : null;
       await addAnimeToDefaultList(animeData, profileId || undefined);
-      toast('Added to your list!', 'success');
+      try { router.refresh(); } catch (e) { /* ignore */ }
     } catch (error) {
+      setOptimisticAddedIds(prev => prev.filter(x => x !== id));
       toast(error?.message || 'Unable to add to list', 'error');
     } finally {
+      addingRef.current = false;
       setAddingToList(false);
     }
   };
@@ -92,7 +107,7 @@ const SeasonFlyCard = ({ anime, color, isOnLeft = false }) => {
           <motion.div
             whileTap={{ x: 4, y: 4 }}
             style={{ border: `1px solid ${color}` }}
-            onClick={() => router.push(`/anime/${encodeURIComponent(anime.title)}/${anime.id}`)}
+            onClick={() => router.push(`/anime?title=${encodeURIComponent(anime.title)}&id=${anime.id}`)}
             className='relative h-full w-full bg-[#0b001f] flex items-center justify-center text-xs z-20'
           >
             <PlayIcon size={20} stroke={color} />

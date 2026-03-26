@@ -53,43 +53,16 @@ const fetchAniListMedia = async (idMal) => {
   const query = `
     query ($idMal: Int) {
       Media(idMal: $idMal, type: ANIME) {
-        idMal
-        season
-        seasonYear
-        format
-        status
-        episodes
-        duration
-        genres
-        averageScore
-        popularity
-        description(asHtml: false)
+        idMal season seasonYear format status episodes duration genres averageScore popularity description(asHtml: false)
         bannerImage
         coverImage { extraLarge large color }
         title { romaji english native }
         studios(isMain: true) { nodes { name } }
         trailer { id site }
         characters(perPage: 12, sort: [ROLE, RELEVANCE]) {
-          edges {
-            role
-            node {
-              id
-              name { full }
-              image { large }
-            }
-          }
+          edges { role node { id name { full } image { large } } }
         }
-        relations {
-          edges {
-            relationType
-            node {
-              idMal
-              type
-              format
-              title { romaji english }
-            }
-          }
-        }
+        relations { edges { relationType node { idMal type format title { romaji english } } } }
       }
     }
   `;
@@ -105,14 +78,11 @@ const fetchAniListMedia = async (idMal) => {
 const findFranchiseRoot = async (startId, visited = new Set()) => {
   if (visited.has(startId)) return startId;
   visited.add(startId);
-
   const media = await fetchAniListMedia(startId);
   if (!media) return startId;
-
   const prequelEdge = media.relations?.edges?.find(
     e => e.relationType === 'PREQUEL' && e.node.type === 'ANIME' && e.node.idMal
   );
-
   if (!prequelEdge) return startId;
   return findFranchiseRoot(prequelEdge.node.idMal, visited);
 };
@@ -120,14 +90,11 @@ const findFranchiseRoot = async (startId, visited = new Set()) => {
 const discoverFranchise = async (rootId) => {
   const visited = new Map();
   const queue = [rootId];
-
   while (queue.length) {
     const id = queue.shift();
     if (visited.has(id)) continue;
-
     const media = await fetchAniListMedia(id);
     if (!media) continue;
-
     visited.set(id, {
       malId: id,
       title: media.title?.english || media.title?.romaji,
@@ -135,7 +102,6 @@ const discoverFranchise = async (rootId) => {
       season: media.season,
       anilistData: media,
     });
-
     for (const edge of media.relations?.edges ?? []) {
       if (
         edge.node.type === 'ANIME' &&
@@ -147,7 +113,6 @@ const discoverFranchise = async (rootId) => {
       }
     }
   }
-
   return visited;
 };
 
@@ -191,9 +156,7 @@ export async function POST(req) {
     const body = await req.json();
     let { title, id } = body ?? {};
     if (!title && !id) return NextResponse.json({ error: 'no input' }, { status: 400 });
-
     let matchedMalId = id ? parseInt(id, 10) : null;
-
     if (!matchedMalId && title) {
       const searchResults = await searchMAL(title);
       if (searchResults.length) {
@@ -201,28 +164,22 @@ export async function POST(req) {
         if (bestMatch) matchedMalId = bestMatch.mal_id;
       }
     }
-
     if (!matchedMalId) return NextResponse.json({ error: 'could not resolve id' }, { status: 404 });
-
     const rootMalId = await findFranchiseRoot(matchedMalId);
     const franchiseMap = await discoverFranchise(rootMalId);
-
     let seasons = Array.from(franchiseMap.values());
     const jikanMetaList = await Promise.all(seasons.map(s => fetchAnimeMeta(s.malId)));
-
     seasons = seasons.map((season, i) => mergeSeasonData(season, jikanMetaList[i])).sort((a, b) => {
       if (a.year && b.year) return a.year - b.year;
       if (a.aired && b.aired) return new Date(a.aired) - new Date(b.aired);
       return 0;
     });
-
     const payload = {
       title: title || seasons[0]?.title || 'Unknown Title',
       rootMalId,
       matchedMalId,
       seasons,
     };
-
     return NextResponse.json(payload);
   } catch (err) {
     console.error(err);

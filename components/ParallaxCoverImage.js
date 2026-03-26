@@ -1,7 +1,7 @@
 'use client'
 
 import { useRef } from 'react';
-import Image from "next/image";
+// replaced next/image with native img
 import { StarIcon } from "lucide-react";
 import { animate, motion, useMotionValue, useTransform } from 'motion/react';
 import { useRouter } from 'next/navigation';
@@ -43,17 +43,16 @@ export default function ParallaxCoverImage({ animeData }) {
         transformStyle: "preserve-3d",
       }}
       whileTap={{ scale: 0.95 }}
-      onClick={() => router.push(`/anime/${animeData.title}/${animeData.id}`)}
-      className="hidden md:block flex-shrink-0 w-56 -mb-4 cursor-pointer"
+      onClick={() => router.push(`/anime?title=${encodeURIComponent(animeData.title)}&id=${animeData.id}`)}
+      className="hidden md:block shrink-0 w-56 -mb-4 cursor-pointer"
     >
       <div
-        className="relative aspect-[2/3] rounded-xl overflow-hidden shadow-lg  transition-shadow duration-500"
+        className="relative aspect-2/3 rounded-xl overflow-hidden shadow-lg  transition-shadow duration-500"
       >
-        <Image
+        <img
           src={animeData.coverImage}
           alt={`${animeData.title} cover`}
-          className="object-cover"
-          fill
+          className="object-cover w-full h-full absolute inset-0"
         />
         <div className="absolute bottom-0 left-0 flex items-center justify-center gap-1 w-full p-1 bg-black/50 backdrop-blur-sm text-sm font-bold">
           <StarIcon className="w-4 h-4 text-amber-400 fill-current" />

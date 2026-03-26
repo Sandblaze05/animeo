@@ -6,7 +6,7 @@ import { usePathname, useRouter } from "next/navigation"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { motion, AnimatePresence } from 'motion/react';
 import gsap from "gsap"
-import Image from "next/image"
+// replaced next/image with native img
 import { useToast } from "@/providers/toast-provider"
 
 const navItems = [
@@ -174,7 +174,7 @@ const MobileNav = () => {
 
   return (
     <div className="w-screen z-9000 sm:hidden">
-      <div aria-label="menu" className="fixed left-5 top-5 p-2 h-12 w-12 flex items-center justify-center rounded-full bg-black/20 border-white/20 border-1 shadow-2xl backdrop-blur-lg">
+      <div aria-label="menu" className="fixed left-5 top-5 p-2 h-12 w-12 flex items-center justify-center rounded-full bg-black/20 border-white/20 border shadow-2xl backdrop-blur-lg">
         <svg width="30px" height="30px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M4 18H10" stroke="#FFF" strokeWidth="2" strokeLinecap="round" />
           <path d="M4 12L16 12" stroke="#FFF" strokeWidth="2" strokeLinecap="round" />
@@ -188,10 +188,10 @@ const MobileNav = () => {
           onClick={() => inputRef.current?.focus()}
           onSubmit={(e) => {
             e.preventDefault();
-            if (query) router.push(`/anime/${encodeURIComponent(query)}`);
+            if (query) router.push(`/anime?title=${encodeURIComponent(query)}`);
             inputRef.current?.blur();
           }}
-          className="flex cursor-pointer px-3 gap-3 items-center justify-start text-white w-[35svw] max-w-[calc(100svw-10rem)] h-12 rounded-full border-1 border-white/20 bg-black/20 backdrop-blur-lg overflow-clip"
+          className="flex cursor-pointer px-3 gap-3 items-center justify-start text-white w-[35svw] max-w-[calc(100svw-10rem)] h-12 rounded-full border border-white/20 bg-black/20 backdrop-blur-lg overflow-clip"
         >
           <SearchIcon className="text-white/70 w-5 h-5" />
           <input
@@ -212,16 +212,14 @@ const MobileNav = () => {
             onClick={() => setIsProfileOpen(prev => !prev)}
             whileTap={{ scale: 0.95 }}
             aria-label="profile"
-            className="h-12 w-12 flex justify-center items-center rounded-full bg-black/20 border-white/20 border-1 shadow-2xl backdrop-blur-lg cursor-pointer"
+            className="h-12 w-12 flex justify-center items-center rounded-full bg-black/20 border-white/20 border shadow-2xl backdrop-blur-lg cursor-pointer"
           >
             {currentProfile.avatar ? (
               <div className="h-10 w-10 rounded-full overflow-hidden relative">
-                <Image
+                <img
                   src={currentProfile.avatar}
                   alt={currentProfile.name}
-                  fill
-                  sizes="40px"
-                  className="object-cover"
+                  className="object-cover w-full h-full"
                 />
               </div>
             ) : (
@@ -235,17 +233,15 @@ const MobileNav = () => {
                 initial={{ opacity: 0, y: 10, scale: 0.95 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                className="absolute top-full mt-2 right-0 w-[70vw] max-w-[300px] flex flex-col gap-5 justify-center items-center p-4 rounded-xl bg-black/60 backdrop-blur-xl border border-white/20 shadow-2xl z-50"
+                className="absolute top-full mt-2 right-0 w-[70vw] max-w-75 flex flex-col gap-5 justify-center items-center p-4 rounded-xl bg-black/60 backdrop-blur-xl border border-white/20 shadow-2xl z-50"
               >
                 <div className="flex flex-col gap-3 text-white px-4 py-3 w-full items-center">
                   <div className="h-14 w-14 rounded-full overflow-hidden relative border border-white/20 bg-white/10 flex items-center justify-center">
                     {currentProfile.avatar ? (
-                      <Image
+                      <img
                         src={currentProfile.avatar}
                         alt={currentProfile.name}
-                        fill
-                        sizes="56px"
-                        className="object-cover"
+                        className="object-cover w-full h-full"
                       />
                     ) : (
                       <span className="text-base font-semibold">{currentProfile.name.charAt(0).toUpperCase()}</span>
@@ -278,7 +274,7 @@ const MobileNav = () => {
               {suggestionData.map((anime, idx) => (
                 <div key={idx} className="flex items-center gap-3 p-3 border-b border-white/20 last:border-none hover:bg-white/10 transition-colors cursor-pointer">
                   <div className="h-12 w-12 relative shrink-0 rounded-md overflow-hidden bg-white/10">
-                    <Image src={anime.images.webp.small_image_url} alt={anime.title} fill className="object-cover" />
+                    <img src={anime.images.webp.small_image_url} alt={anime.title} className="object-cover w-full h-full" />
                   </div>
                   <div className="flex flex-col min-w-0">
                     <span className="text-sm text-white truncate font-medium">{anime.title}</span>
@@ -294,7 +290,7 @@ const MobileNav = () => {
       </div>
       <footer
         ref={navRef}
-        className="fixed bottom-4 left-1/2 -translate-x-1/2 w-[60vw] h-13 border-[1px] border-white/20 bg-black/30 backdrop-blur-lg flex sm:hidden justify-around items-center rounded-full shadow-2xl p-1 z-[9999]"
+        className="fixed bottom-4 left-1/2 -translate-x-1/2 w-[60vw] h-13 border border-white/20 bg-black/30 backdrop-blur-lg flex sm:hidden justify-around items-center rounded-full shadow-2xl p-1 z-9999"
       >
         <div
           ref={selectedPillRef}

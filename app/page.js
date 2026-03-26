@@ -8,6 +8,7 @@ import { useToast } from "@/providers/toast-provider";
 import TopAnime from "@/components/TopAnime";
 import CurrentSeason from "@/components/CurrentSeason";
 import CurrentSeasonSkeleton from "@/components/Skeletons/CurrentSeasonSkeleton";
+import { getHeroItems, getAllAnimeData } from './actions';
 
 export default function Home() {
   const { toast } = useToast();
@@ -17,48 +18,30 @@ export default function Home() {
   const [heroLoading, setHeroLoading] = useState(true);
 
   useEffect(() => {
-    const getHeroItems = async () => {
+    const getHeroItemsLocal = async () => {
       setHeroLoading(true);
       try {
-        const res = await fetch('/api/hero-items');
-
-        if (!res.ok) {
-          const errData = await res.json();
-          toast(`${res.status}: ${errData.message || 'Failed to fetch data.'}`, 'error');
-          return;
-        }
-
-        const data = await res.json();
-        console.log(data);
-
+        const data = await getHeroItems();
         setAnimeData(data);
-        setHeroLoading(false);
       }
       catch (err) {
         toast(`An error occured: ${err}`, "error");
       }
+      finally { setHeroLoading(false); }
     }
 
     const getAllData = async () => {
       try {
-        const res = await fetch('/api/all-anime-data');
-
-        if (!res.ok) {
-          const errData = await res.json();
-          toast(`${res.status}: ${errData.message || 'Failed to fetch data.'}`, 'error');
-          return;
-        }
-
-        const data = await res.json();
+        const data = await getAllAnimeData();
         setAllAnimeData(data);
         console.log("All data: ", data);
-
       }
       catch (err) {
         toast(`An error occured: ${err}`, 'error');
       }
     }
-    getHeroItems();
+
+    getHeroItemsLocal();
     getAllData();
   }, []);
 

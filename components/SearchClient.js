@@ -1,12 +1,13 @@
 'use client'
 
 import { useToast } from '@/providers/toast-provider';
+import { useRouter } from 'next/navigation';
 import { 
   Star, PlusIcon, PlayIcon, Grid2X2Icon, ListIcon, 
   Loader2, ChevronRight, ChevronLeft, MousePointerClick, Filter, ChevronDown
 } from 'lucide-react';
 import React, { useState, useEffect, useRef } from 'react';
-import Image from 'next/image';
+// replaced next/image with native img
 import { motion, AnimatePresence } from 'motion/react';
 import { addAnimeToDefaultList } from '@/app/actions';
 
@@ -21,7 +22,7 @@ const AnimatedDropdown = ({ value, onChange, options, placeholder }) => {
       {/* Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center justify-between gap-2 bg-white/10 hover:bg-white/15 border-1 border-white/20 rounded-xl px-4 py-2 text-sm text-white transition-colors w-36"
+        className="flex items-center justify-between gap-2 bg-white/10 hover:bg-white/15 border border-white/20 rounded-xl px-4 py-2 text-sm text-white transition-colors w-36"
       >
         <span className="truncate">{selectedLabel}</span>
         <motion.div animate={{ rotate: isOpen ? 180 : 0 }} transition={{ duration: 0.2 }}>
@@ -45,7 +46,7 @@ const AnimatedDropdown = ({ value, onChange, options, placeholder }) => {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -10, scale: 0.95 }}
             transition={{ duration: 0.15, ease: "easeOut" }}
-            className="absolute top-full left-0 mt-2 w-full z-50 bg-[#150a2b] border-1 border-white/20 rounded-xl shadow-2xl shadow-black/50 overflow-hidden flex flex-col p-1"
+            className="absolute top-full left-0 mt-2 w-full z-50 bg-[#150a2b] border border-white/20 rounded-xl shadow-2xl shadow-black/50 overflow-hidden flex flex-col p-1"
           >
             {options.map((opt) => (
               <button
@@ -73,6 +74,7 @@ const AnimatedDropdown = ({ value, onChange, options, placeholder }) => {
 // --- Main Search Client Component ---
 const SearchClient = ({ title, initialData, initialPagination }) => {
   const { toast } = useToast();
+  const router = useRouter();
 
   const [listOfAnime, setListOfAnime] = useState(initialData || []);
   const [pagination, setPagination] = useState(initialPagination || {});
@@ -82,6 +84,8 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [showReadMore, setShowReadMore] = useState(false);
   const [addingToList, setAddingToList] = useState(false);
+  const [optimisticAddedIds, setOptimisticAddedIds] = useState([]);
+  const addingRef = useRef(false);
 
   // --- Filter States ---
   const [typeFilter, setTypeFilter] = useState('');
@@ -170,16 +174,27 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
   };
 
   const handleAddToList = async (animeData) => {
-    if (addingToList) return;
+    if (addingRef.current) return;
+    const id = animeData.id || animeData.mal_id || animeData.title;
+    if (optimisticAddedIds.includes(id)) {
+      toast('Already added', 'info');
+      return;
+    }
 
+    // optimistic
+    addingRef.current = true;
+    setOptimisticAddedIds(prev => [...prev, id]);
     setAddingToList(true);
+    toast('Added to your list!', 'success');
     try {
       const profileId = typeof window !== 'undefined' ? localStorage.getItem('profileId') : null;
       await addAnimeToDefaultList(animeData, profileId || undefined);
-      toast('Added to your list!', 'success');
+      try { router.refresh(); } catch (e) { /* ignore */ }
     } catch (error) {
+      setOptimisticAddedIds(prev => prev.filter(x => x !== id));
       toast(error?.message || 'Unable to add to list', 'error');
     } finally {
+      addingRef.current = false;
       setAddingToList(false);
     }
   };
@@ -218,13 +233,13 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
   };
 
   return (
-    <div className='mt-20 border-t-1 border-white/20 w-screen flex flex-col text-white'>
+    <div className='mt-20 border-t border-white/20 w-screen flex flex-col text-white'>
       <div className='w-screen h-16 flex items-center px-4'>
         <h2 className='text-xl font-bold text-white flex items-center'>Search:&ensp;<span className='text-lg font-normal'>{decodeURIComponent(title)}</span></h2>
       </div>
 
       {/* --- Updated Filter Bar --- */}
-      <div className='w-full px-4 py-3 flex flex-wrap gap-3 items-center border-b-1 border-t-1 border-white/10 bg-[#0b001f]/30 backdrop-blur-md z-20 relative'>
+      <div className='w-full px-4 py-3 flex flex-wrap gap-3 items-center border-b border-t border-white/10 bg-[#0b001f]/30 backdrop-blur-md z-20 relative'>
         <Filter className='w-4 h-4 text-white/50' />
         <span className='text-sm font-medium text-white/50 mr-2'>Filters:</span>
 
@@ -268,17 +283,17 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
         {/* Result container */}
         <div
           className='relative flex flex-col items-center justify-start w-screen lg:w-[70%] 
-          h-[calc(100vh-140px)] rounded-none border-r-0 lg:rounded-tr-xl border-t-1 
-          lg:border-r-1 border-white/20'
+          h-[calc(100vh-140px)] rounded-none border-r-0 lg:rounded-tr-xl border-t 
+          lg:border-r border-white/20'
           >
           {/* Header of search results */}
-          <div className='flex items-center bg-[#0b001f]/50 justify-between px-3 py-1 absolute top-0 left-0 w-full h-10 rounded-none lg:rounded-tr-xl border-b-1 border-white/20 backdrop-blur-lg z-10'>
+          <div className='flex items-center bg-[#0b001f]/50 justify-between px-3 py-1 absolute top-0 left-0 w-full h-10 rounded-none lg:rounded-tr-xl border-b border-white/20 backdrop-blur-lg z-10'>
             <span className='text-xs'>
               {pagination?.items?.total || listOfAnime?.length}&ensp;Results
             </span>
 
             {/* Layout toggle */}
-            <div className='relative flex p-1 rounded-md items-center justify-center border-1 border-white/40 gap-2'>
+            <div className='relative flex p-1 rounded-md items-center justify-center border border-white/40 gap-2'>
               <Grid2X2Icon onClick={() => setLayoutType('grid')} style={{ color: layoutType === 'grid' ? 'black' : 'grey' }} className='h-5 w-5 z-1 transition-colors cursor-pointer' />
               <div
                 style={{
@@ -290,7 +305,7 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
                 }}
                 className='absolute h-full w-[50%] bg-white -z-1 transition-all'
               />
-              <div className='absolute top-1/2 left-1/2 -translate-1/2 h-full w-[1px] bg-white/20' />
+              <div className='absolute top-1/2 left-1/2 -translate-1/2 h-full w-px bg-white/20' />
               <ListIcon onClick={() => setLayoutType('list')} style={{ color: layoutType !== 'grid' ? 'black' : 'grey' }} className='h-5 w-5 z-1 transition-colors cursor-pointer' />
             </div>
           </div>
@@ -311,11 +326,11 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
                   borderColor: selectedEntry === i ? 'oklch(59.2% 0.249 0.584)' : 'color-mix(in oklab, var(--color-white) 20%, transparent)',
                   borderWidth: selectedEntry === i ? '4px' : '1px',
                 }}
-                className='relative aspect-[2/3] w-[calc(33.33%-0.7rem)] sm:w-[calc(25%-0.75rem)]
-                xl:w-[calc(20%-0.8rem)] bg-white/5 hover:bg-white/10 border-1 transition-all rounded-xl overflow-hidden 
+                className='relative aspect-2/3 w-[calc(33.33%-0.7rem)] sm:w-[calc(25%-0.75rem)]
+                xl:w-[calc(20%-0.8rem)] bg-white/5 hover:bg-white/10 border transition-all rounded-xl overflow-hidden 
                 group flex flex-col justify-end cursor-pointer'
               >
-                <Image
+                <img
                   src={anime.images.webp.large_image_url}
                   alt={anime.title}
                   width={100}
@@ -323,7 +338,7 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
                   className="absolute inset-0 w-full h-full object-cover transition-transform duration-300 group-hover:scale-110"
                 />
 
-                <div className="absolute bottom-0 left-0 w-full h-1/2 bg-gradient-to-t from-black/90 via-black/50 to-transparent" />
+                <div className="absolute bottom-0 left-0 w-full h-1/2 bg-linear-to-t from-black/90 via-black/50 to-transparent" />
 
                 <h1 className='relative max-w-[80%] mx-auto max-h-10 text-sm font-bold text-white text-center px-2 pb-3 line-clamp-2'>
                   {anime.title}
@@ -340,7 +355,7 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
                   className='px-3 py-2 bg-white/10 hover:bg-white/20 
                   disabled:opacity-50 disabled:cursor-not-allowed rounded-lg 
                   text-sm font-semibold transition-colors group flex 
-                  items-center justify-center border-1 border-white/20'
+                  items-center justify-center border border-white/20'
                 >
                   <ChevronLeft className='group-hover:-translate-x-1 transition-transform' />
                   Prev
@@ -369,7 +384,7 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
                       key={pageNum}
                       onClick={() => goToPage(pageNum)}
                       disabled={isLoadingMore}
-                      className={`px-3 py-2 aspect-square w-10 h-10 rounded-lg border-1 border-white/20 text-sm font-semibold transition-colors ${currentPage === pageNum
+                      className={`px-3 py-2 aspect-square w-10 h-10 rounded-lg border border-white/20 text-sm font-semibold transition-colors ${currentPage === pageNum
                         ? 'bg-pink-600 text-white'
                         : 'bg-white/10 hover:bg-white/20'
                         }`}
@@ -384,7 +399,7 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
                   disabled={!pagination.has_next_page || isLoadingMore}
                   className="px-3 py-2 bg-white/10 hover:bg-white/20 disabled:opacity-50 
                   disabled:cursor-not-allowed group rounded-lg text-sm font-semibold 
-                  transition-colors flex items-center justify-center gap-1 border-1 border-white/20"
+                  transition-colors flex items-center justify-center gap-1 border border-white/20"
                 >
                   Next
                   <ChevronRight className='group-hover:translate-x-1 transition-transform' />
@@ -397,7 +412,7 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
         {/* Side content - visible only on desktop */}
         {selectedEntry === null && (
           <div className='lg:flex flex-col lg:flex-1 hidden h-[calc(100vh-140px)] justify-center items-center p-6'>
-            <div className='flex flex-col items-center justify-center w-full h-[80%] max-h-[600px] border-2 border-dashed border-white/10 rounded-2xl bg-white/5'>
+            <div className='flex flex-col items-center justify-center w-full h-[80%] max-h-150 border-2 border-dashed border-white/10 rounded-2xl bg-white/5'>
               <MousePointerClick className='w-12 h-12 text-white/20 mb-4' />
               <p className='text-white/40 font-medium text-center px-4'>
                 Select an anime from the list<br/>to view details
@@ -408,8 +423,8 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
 
         {selectedEntry !== null && (
           <div className='lg:flex flex-col lg:flex-1 hidden p-4 justify-start items-center gap-3 h-[calc(100vh-140px)] overflow-y-auto'>
-            <div className='relative border-1 border-white/20 rounded-xl aspect-[9/16] h-60 w-40 mt-4 shrink-0'>
-              <Image
+            <div className='relative border border-white/20 rounded-xl aspect-9/16 h-60 w-40 mt-4 shrink-0'>
+              <img
                 src={listOfAnime[selectedEntry].images.webp.large_image_url}
                 alt={listOfAnime[selectedEntry].title}
                 width={100}
@@ -464,12 +479,12 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
             </div>
 
             <div className='relative h-fit w-full px-2 shrink-0'>
-              <div className='absolute top-2 left-5 bg-white border-1 border-white/40 rounded-md px-1 z-10'>
+              <div className='absolute top-2 left-5 bg-white border border-white/40 rounded-md px-1 z-10'>
                 <span className='text-xs text-black font-bold'>Synopsis</span>
               </div>
               
               <div 
-                className='relative border-1 border-white/40 rounded-md mt-5 overflow-hidden transition-all duration-300'
+                className='relative border border-white/40 rounded-md mt-5 overflow-hidden transition-all duration-300'
                 style={{
                   height: isExpanded ? '400px' : '150px'
                 }}
@@ -487,13 +502,13 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
                 </div>
 
                 {!isExpanded && showReadMore && (
-                  <div className='absolute bottom-0 left-0 w-full h-24 bg-gradient-to-t from-[#0b001f]/40 via-[#0b001f]/20 to-transparent pointer-events-none' />
+                  <div className='absolute bottom-0 left-0 w-full h-24 bg-linear-to-t from-[#0b001f]/40 via-[#0b001f]/20 to-transparent pointer-events-none' />
                 )}
 
                 {showReadMore && (
                   <button
                     onClick={() => setIsExpanded(!isExpanded)}
-                    className='absolute bottom-0 left-0 w-full py-1.5 bg-gradient-to-t from-[#0b001f] to-[#0b001f]/50 hover:bg-black/60 backdrop-blur-md text-xs font-bold text-white transition-colors z-20'
+                    className='absolute bottom-0 left-0 w-full py-1.5 bg-linear-to-t from-[#0b001f] to-[#0b001f]/50 hover:bg-black/60 backdrop-blur-md text-xs font-bold text-white transition-colors z-20'
                   >
                     {isExpanded ? 'Show Less' : 'Show More'}
                   </button>

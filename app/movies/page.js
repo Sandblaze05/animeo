@@ -1,10 +1,11 @@
-'use client'
+"use client"
 
 import { useEffect, useState } from "react"
 import MovieHero from "@/components/MovieHero";
 import AnimeHeroSkeleton from "@/components/Skeletons/AnimeHeroSkeleton";
 import { AnimatePresence, motion } from "motion/react";
 import { useToast } from "@/providers/toast-provider";
+import { getMovies } from '../actions';
 
 export default function MoviesPage() {
   const { toast } = useToast();
@@ -16,22 +17,13 @@ export default function MoviesPage() {
     const getMovieItems = async () => {
       setLoading(true);
       try {
-        const res = await fetch('/api/movies');
-
-        if (!res.ok) {
-          const errData = await res.json();
-          toast(`${res.status}: ${errData.message || 'Failed to fetch data.'}`, 'error');
-          return;
-        }
-
-        const data = await res.json();
+        const data = await getMovies();
         setMovieData(data);
-        setLoading(false);
       }
       catch (err) {
         toast(`An error occured: ${err}`, "error");
-        setLoading(false);
       }
+      finally { setLoading(false); }
     }
 
     getMovieItems();

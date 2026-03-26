@@ -54,7 +54,7 @@ export async function GET() {
       .filter(anime => anime.bannerImage)
       .map(anime => {
         const description = anime.description
-          ? anime.description.replace(/<br\s*\/?>/gi, ' ').substring(0, 180) + '...'
+          ? anime.description.replace(/<br\s*\/?>>/gi, ' ').substring(0, 180) + '...'
           : 'No description available.';
 
         return {
@@ -70,18 +70,8 @@ export async function GET() {
         };
       });
 
-      // const topAiring = allAnime.map((anime) => ({
-      //   id: anime.id,
-      //   title: anime.title.english || anime.title.romaji,
-      //   coverImage: anime.coverImage.extraLarge,
-      //   score: anime.averageScore,
-      //   year: anime.startDate.year
-      // }))
-
     return NextResponse.json(heroItems, {
-      headers: {
-        'Cache-Control': 'public, max-age=3600, stale-while-revalidate=60'
-      }
+      headers: { 'Cache-Control': 'public, max-age=3600, stale-while-revalidate=60' }
     });
   }
   catch (err) {

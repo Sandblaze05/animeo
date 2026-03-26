@@ -2,15 +2,32 @@
   "name": "animeo",
   "version": "0.1.0",
   "private": true,
+  "main": "electron/main.js",
   "scripts": {
     "dev": "next dev --turbopack",
-    "build": "next build --turbopack",
+    "build": "next build",
     "start": "next start",
-    "lint": "eslint",
+    "lint": "next lint",
     "electron:dev": "concurrently \"next dev\" \"wait-on http://localhost:3000 && electron .\"",
-    "electron:prod": "next build && next start & electron ."
+    "electron:prod": "npm run build && electron-builder",
+    "postinstall": "electron-builder install-app-deps"
   },
-  "main": "electron/main.js",
+  "build": {
+    "appId": "com.animeo.app",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "electron/**/*",
+      "utils/sqlite.js",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/node_modules/better-sqlite3/**/*"
+    ]
+  },
   "dependencies": {
     "better-sqlite3": "^12.8.0",
     "class-variance-authority": "^0.7.1",
@@ -28,6 +45,7 @@
     "@tailwindcss/postcss": "^4",
     "concurrently": "^9.2.1",
     "electron": "^41.0.3",
+    "electron-builder": "^26.8.1",
     "eslint": "^9",
     "eslint-config-next": "15.5.4",
     "tailwindcss": "^4",

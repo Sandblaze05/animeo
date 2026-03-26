@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { useRef } from 'react';
 import DetailsDisplaySkeleton from './Skeletons/DetailsDisplaySkeleton';
 import { useToast } from '@/providers/toast-provider';
+import { resolveAnime, getAnimeEpisodes } from '../app/actions';
 
 export default function DetailsDisplay({ initialTitle, initialId }) {
   const [loading, setLoading] = useState(true);
@@ -26,19 +27,7 @@ export default function DetailsDisplay({ initialTitle, initialId }) {
     const resolve = async () => {
       setLoading(true);
       try {
-        const res = await fetch('/api/anime/resolve', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: initialTitle, id: initialId }),
-        });
-        if (!res.ok) {
-          const msg = 'Resolve failed';
-          console.error(msg, res.status);
-          toast(msg, 'error');
-          setError(msg);
-          return;
-        }
-        const data = await res.json();
+        const data = await resolveAnime({ title: initialTitle, id: initialId });
         if (!mounted) return;
         // initialize seasons with episode-loading flags
         const seasonsInit = (data.seasons || []).map(s => ({
@@ -94,11 +83,11 @@ export default function DetailsDisplay({ initialTitle, initialId }) {
 
     fetchingRef.current.add(key);
     try {
-      const res = await fetch(`/api/anime/episodes?malId=${season.malId}&jikanPage=${jikanPage}`);
-      if (!res.ok) throw new Error('episodes fetch failed');
-      const json = await res.json();
-      // API returns { episodes, pagination }
-      return { episodes: json.episodes ?? [], pagination: json.pagination ?? { has_next_page: false, current_page: jikanPage }, error: null };
+      const json = await getAnimeEpisodes(season.malId, jikanPage);
+      // normalize returned shapes: { episodes, pagination } or array
+      const episodes = (json && json.episodes) ? json.episodes : (Array.isArray(json) ? json : []);
+      const pagination = (json && json.pagination) ? json.pagination : { has_next_page: false, current_page: jikanPage };
+      return { episodes, pagination, error: null };
     } catch (e) {
       console.error(e);
       return { episodes: [], pagination: { has_next_page: false, current_page: jikanPage }, error: e.message || 'fetch error' };
@@ -131,68 +120,60 @@ export default function DetailsDisplay({ initialTitle, initialId }) {
 
 
   // When seasons are available, stream episodes per-season progressively
+  // When seasons are available, stream episodes per-season progressively
   useEffect(() => {
     if (!meta.seasons || !meta.seasons.length) return;
     let mounted = true;
-    const retryTimers = [];
 
+    const loadEpisodesSequentially = async () => {
+      // FIX: Use a for...of loop to fetch ONE season at a time, sequentially.
+      for (const season of meta.seasons) {
+        if (!mounted) break;
+        if (season.episodesLoading === false) continue;
 
+        const nextPage = computeNextJikanPage(season);
+        const { episodes: eps, pagination, error } = await fetchEpisodesFor(season, nextPage);
 
-    // Start fetching first Jikan page of episodes per-season in parallel
-    meta.seasons.forEach(async (season) => {
-      if (season.episodesLoading === false) return;
+        if (!mounted) break;
 
-      const nextPage = computeNextJikanPage(season);
-      const { episodes: eps, pagination, error } = await fetchEpisodesFor(season, nextPage);
-      if (!mounted) return;
+        if (error) {
+          // Only show the toast if it's not a rate limit, to prevent spam
+          if (!String(error).includes('429')) {
+            toast(error, 'error');
+          }
 
-      if (error) {
-        // keep episodesLoading true to show skeleton for that season and record the error
-        toast(error, 'error');
-        setMeta(prev => ({
-          ...prev,
-          seasons: prev.seasons.map(s => s.malId === season.malId ? { ...s, episodesLoading: true, episodesError: error } : s),
-        }));
-
-        // retry after a short delay
-        const t = setTimeout(async () => {
-          if (!mounted) return;
-          const { episodes: retryEps, pagination: retryPagination, error: retryError } = await fetchEpisodesFor(season, nextPage);
-          if (!mounted) return;
-          if (retryError) toast(retryError, 'error');
-          // derive totals if Jikan provides items.total or last_visible_page
-          const totalItems = retryPagination?.items?.total ?? retryPagination?.total ?? null;
-          const perPage = retryPagination?.items?.per_page ?? retryPagination?.items?.perPage ?? null;
-          const lastVisible = retryPagination?.last_visible_page ?? null;
+          setMeta(prev => ({
+            ...prev,
+            seasons: prev.seasons.map(s =>
+              s.malId === season.malId
+                ? { ...s, episodesLoading: false, episodesError: error }
+                : s
+            ),
+          }));
+        } else {
+          // Derive totals if Jikan provides items.total or last_visible_page
+          const totalItems = pagination?.items?.total ?? pagination?.total ?? null;
+          const perPage = pagination?.items?.per_page ?? pagination?.items?.perPage ?? null;
+          const lastVisible = pagination?.last_visible_page ?? null;
           const episodesTotalCount = totalItems ?? (lastVisible && perPage ? lastVisible * perPage : null);
           const episodesTotalPages = episodesTotalCount ? Math.max(1, Math.ceil(episodesTotalCount / PAGE_SIZE)) : null;
 
           setMeta(prev => ({
             ...prev,
-            seasons: prev.seasons.map(s => s.malId === season.malId ? { ...s, episodes: [...(s.episodes || []), ...retryEps], episodesLoading: retryError ? true : false, episodesError: retryError, episodesPrevPage: s.episodesPage ?? s.episodesPrevPage ?? null, episodesPage: retryPagination?.current_page ?? nextPage, episodesHasNext: paginationHasNext(retryPagination), episodesTotalCount, episodesTotalPages } : s),
+            seasons: prev.seasons.map(s =>
+              s.malId === season.malId
+                ? { ...s, episodes: [...(s.episodes || []), ...eps], episodesLoading: false, episodesError: null, episodesPrevPage: s.episodesPage ?? s.episodesPrevPage ?? null, episodesPage: pagination?.current_page ?? nextPage, episodesHasNext: paginationHasNext(pagination), episodesTotalCount, episodesTotalPages }
+                : s
+            ),
           }));
-        }, 5000);
-        retryTimers.push(t);
-      } else {
-        // derive totals if Jikan provides items.total or last_visible_page
-        const totalItems = pagination?.items?.total ?? pagination?.total ?? null;
-        const perPage = pagination?.items?.per_page ?? pagination?.items?.perPage ?? null;
-        const lastVisible = pagination?.last_visible_page ?? null;
-        const episodesTotalCount = totalItems ?? (lastVisible && perPage ? lastVisible * perPage : null);
-        const episodesTotalPages = episodesTotalCount ? Math.max(1, Math.ceil(episodesTotalCount / PAGE_SIZE)) : null;
-
-        setMeta(prev => ({
-          ...prev,
-          seasons: prev.seasons.map(s =>
-            s.malId === season.malId
-              ? { ...s, episodes: [...(s.episodes || []), ...eps], episodesLoading: false, episodesError: error, episodesPrevPage: s.episodesPage ?? s.episodesPrevPage ?? null, episodesPage: pagination?.current_page ?? nextPage, episodesHasNext: paginationHasNext(pagination), episodesTotalCount, episodesTotalPages }
-              : s
-          ),
-        }));
+        }
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
-    });
+    };
 
-    return () => { mounted = false; retryTimers.forEach(t => clearTimeout(t)); };
+    loadEpisodesSequentially();
+
+    return () => { mounted = false; };
     // Use seasonIds as the dependency, NOT meta.seasons
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seasonIds]);
@@ -292,12 +273,12 @@ export default function DetailsDisplay({ initialTitle, initialId }) {
         ) : activeSeason.image ? (
           <img src={activeSeason.image} alt="Backdrop fallback" className="w-full h-full object-cover opacity-20 blur-2xl scale-110" />
         ) : (
-          <div className="w-full h-full bg-gradient-to-br from-[#0b001f] to-[#e60076]/10" />
+          <div className="w-full h-full bg-linear-to-br from-[#0b001f] to-[#e60076]/10" />
         )}
-        <div className="absolute inset-0 bg-gradient-to-t from-[#0b001f] via-[#0b001f]/80 to-transparent" />
+        <div className="absolute inset-0 bg-linear-to-t from-[#0b001f] via-[#0b001f]/80 to-transparent" />
       </div>
 
-      <div className="max-w-[1400px] mx-auto px-6 md:px-12 -mt-40 relative z-10">
+      <div className="max-w-350 mx-auto px-6 md:px-12 -mt-40 relative z-10">
         {isFranchise && (
           <div className="mb-10">
             <h3 className="text-xs uppercase tracking-[0.2em] text-white/40 font-semibold mb-4 ml-1">Franchise Timeline • {decodeURIComponent(searchTitle)}</h3>
@@ -306,7 +287,7 @@ export default function DetailsDisplay({ initialTitle, initialId }) {
                 const isActive = season.malId === activeId;
                 const isRoot = season.malId === rootMalId;
                 return (
-                  <button key={season.malId} onClick={() => setActiveSeasonId(season.malId)} className={`snap-start flex-shrink-0 px-5 py-3 rounded-xl border transition-all duration-300 flex flex-col items-start gap-1 min-w-[200px] max-w-[260px] text-left ${isActive ? 'bg-[#e60076]/10 border-[#e60076] shadow-[0_0_20px_rgba(230,0,118,0.15)]' : 'bg-white/5 border-white/10 hover:bg-white/10 hover:border-white/30'}`}>
+                  <button key={season.malId} onClick={() => setActiveSeasonId(season.malId)} className={`snap-start shrink-0 px-5 py-3 rounded-xl border transition-all duration-300 flex flex-col items-start gap-1 min-w-50 max-w-65 text-left ${isActive ? 'bg-[#e60076]/10 border-[#e60076] shadow-[0_0_20px_rgba(230,0,118,0.15)]' : 'bg-white/5 border-white/10 hover:bg-white/10 hover:border-white/30'}`}>
                     <span className={`text-[10px] uppercase tracking-widest font-bold ${isActive ? 'text-[#e60076]' : 'text-white/40'}`}>{isRoot ? '◆ ' : ''}{season.format ?? `Part ${index + 1}`} • {season.year ?? 'TBA'}</span>
                     <span className={`text-sm font-medium line-clamp-2 ${isActive ? 'text-white' : 'text-white/70'}`}>{season.title}</span>
                     {season.episodesCount && <span className="text-[10px] text-white/30 mt-0.5">{season.episodesCount} eps</span>}
@@ -319,8 +300,8 @@ export default function DetailsDisplay({ initialTitle, initialId }) {
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-14">
           <div className="lg:col-span-3 flex flex-col gap-6">
-            <div className="w-56 md:w-full max-w-[300px] rounded-2xl overflow-hidden shadow-[0_0_40px_rgba(230,0,118,0.15)] border border-white/20 mx-auto lg:mx-0 bg-[#150a2b]">
-              {activeSeason.image ? <img src={activeSeason.image} alt={activeSeason.title} className="w-full h-auto object-cover" /> : <div className="w-full aspect-[2/3] flex items-center justify-center text-white/20">No Image</div>}
+            <div className="w-56 md:w-full max-w-75 rounded-2xl overflow-hidden shadow-[0_0_40px_rgba(230,0,118,0.15)] border border-white/20 mx-auto lg:mx-0 bg-[#150a2b]">
+              {activeSeason.image ? <img src={activeSeason.image} alt={activeSeason.title} className="w-full h-auto object-cover" /> : <div className="w-full aspect-2/3 flex items-center justify-center text-white/20">No Image</div>}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -365,7 +346,7 @@ export default function DetailsDisplay({ initialTitle, initialId }) {
                 /* --- SKELETON LOADER --- */
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {[...Array(12)].map((_, i) => (
-                    <div key={i} className="p-5 rounded-xl bg-white/5 border border-white/10 flex flex-col justify-between min-h-[140px] animate-pulse">
+                    <div key={i} className="p-5 rounded-xl bg-white/5 border border-white/10 flex flex-col justify-between min-h-35 animate-pulse">
                       <div className="pr-10 mb-4">
                         <div className="w-20 h-3 bg-[#e60076]/40 rounded mb-3"></div>
                         <div className="w-3/4 h-4 bg-white/20 rounded mb-2"></div>
@@ -393,7 +374,7 @@ export default function DetailsDisplay({ initialTitle, initialId }) {
                     <>
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         {visible.map((ep) => (
-                          <div key={ep.mal_id} className="group relative p-5 rounded-xl bg-white/5 border border-white/10 hover:bg-[#e60076]/10 hover:border-[#e60076]/50 transition-all duration-300 cursor-pointer overflow-hidden flex flex-col justify-between min-h-[140px]">
+                          <div key={ep.mal_id} className="group relative p-5 rounded-xl bg-white/5 border border-white/10 hover:bg-[#e60076]/10 hover:border-[#e60076]/50 transition-all duration-300 cursor-pointer overflow-hidden flex flex-col justify-between min-h-35">
                             <div className="absolute top-5 right-5 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                               <div className="w-8 h-8 rounded-full bg-[#e60076] flex items-center justify-center shadow-[0_0_15px_rgba(230,0,118,0.5)]">
                                 <svg className="w-4 h-4 text-white ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
@@ -462,7 +443,7 @@ export default function DetailsDisplay({ initialTitle, initialId }) {
                 })()
               ) : (
                 /* --- EMPTY STATE --- */
-                <div className="py-16 text-center border border-white/10 border-dashed rounded-xl flex flex-col items-center justify-center bg-white/[0.02]">
+                <div className="py-16 text-center border border-white/10 border-dashed rounded-xl flex flex-col items-center justify-center bg-white/2">
                   <svg className="w-10 h-10 mb-4 opacity-20 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
                   <p className="text-white/40 text-sm font-light">No episodes found for this installment.</p>
                 </div>
