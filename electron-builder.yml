@@ -1,0 +1,12 @@
+appId: com.animeo.app
+productName: Animeo
+copyright: Copyright © 2026 Animeo
+directories:
+  output: dist
+  buildResources: resources
+files:
+  - from: .
+    filter:
+      - package.json
+      - app
+publish: null
