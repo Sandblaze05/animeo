@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { addAnimeToDefaultList } from '../utils/actions'; // Updated import path
+import { addAnimeToDefaultList, isAnimeInDefaultList } from '../utils/actions'; // Updated import path
 
 // --- Custom Animated Dropdown Component ---
 const AnimatedDropdown = ({ value, onChange, options, placeholder }) => {
@@ -178,6 +178,17 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
       return;
     }
 
+    const profileId = typeof window !== 'undefined' ? localStorage.getItem('profileId') : null;
+    try {
+      const exists = await isAnimeInDefaultList(animeData, profileId || undefined);
+      if (exists) {
+        toast('Already added', 'info');
+        return;
+      }
+    } catch (e) {
+      // if the check fails, continue with optimistic add
+    }
+
     // optimistic
     addingRef.current = true;
     setOptimisticAddedIds(prev => [...prev, id]);
@@ -185,8 +196,6 @@ const SearchClient = ({ title, initialData, initialPagination }) => {
     toast('Added to your list!', 'success');
     
     try {
-      // (Note: The updated actions.js already grabs the profileId automatically, 
-      // but passing it explicitly here works perfectly fine too!)
       const profileId = typeof window !== 'undefined' ? localStorage.getItem('profileId') : null;
       await addAnimeToDefaultList(animeData, profileId || undefined);
       

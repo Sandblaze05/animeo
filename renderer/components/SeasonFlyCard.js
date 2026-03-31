@@ -1,9 +1,9 @@
 import React, { useState, useRef } from 'react'
 import { motion } from 'motion/react'
-import { PlayIcon, PlusIcon } from 'lucide-react'
+import { PlayIcon, PlusIcon, Loader2 } from 'lucide-react'
 import { useRouter } from 'next/router' 
 import { useToast } from '../providers/toast-provider'
-import { addAnimeToDefaultList } from '../utils/actions' 
+import { addAnimeToDefaultList, isAnimeInDefaultList } from '../utils/actions'
 
 const containerVariants = {
   hidden: {},
@@ -36,26 +36,32 @@ const SeasonFlyCard = ({ anime, color, isOnLeft = false }) => {
 
   const handleAddToList = async (animeData) => {
     if (addingRef.current) return;
-    addingRef.current = true;
-    setAddingToList(true);
     const id = animeData.id || animeData.mal_id || animeData.title;
     if (optimisticAddedIds.includes(id)) {
       toast('Already added', 'info');
-      addingRef.current = false;
-      setAddingToList(false);
       return;
     }
 
+    const profileId = typeof window !== 'undefined' ? localStorage.getItem('profileId') : null;
+    try {
+      const exists = await isAnimeInDefaultList(animeData, profileId || undefined);
+      if (exists) {
+        toast('Already added', 'info');
+        return;
+      }
+    } catch (e) {
+      // if the check fails, continue with optimistic add
+    }
+
+    addingRef.current = true;
+    setAddingToList(true);
     setOptimisticAddedIds(prev => [...prev, id]);
     toast('Added to your list!', 'success');
     try {
-      // Your actions.js now does this automatically, but sending it explicitly still works perfectly
-      const profileId = typeof window !== 'undefined' ? localStorage.getItem('profileId') : null;
       await addAnimeToDefaultList(animeData, profileId || undefined);
-      
-      try { 
-        // Pages router equivalent to router.refresh()
-        router.replace(router.asPath, undefined, { scroll: false }); 
+
+      try {
+        router.replace(router.asPath, undefined, { scroll: false });
       } catch (e) { /* ignore */ }
     } catch (error) {
       setOptimisticAddedIds(prev => prev.filter(x => x !== id));
@@ -124,10 +130,15 @@ const SeasonFlyCard = ({ anime, color, isOnLeft = false }) => {
           <motion.div
             whileTap={{ x: 4, y: 4 }}
             style={{ border: `1px solid ${color}` }}
-            onClick={() => handleAddToList(anime)}
+            onClick={() => { if (!addingToList) handleAddToList(anime); }}
+            aria-disabled={addingToList}
             className={`relative h-full w-full bg-[#0b001f] flex items-center justify-center text-xs z-20 cursor-pointer ${addingToList ? 'opacity-60 pointer-events-none' : ''}`}
           >
-            <PlusIcon size={20} fill={color} stroke={color} />
+            {addingToList ? (
+              <Loader2 size={18} className="animate-spin" stroke={color} />
+            ) : (
+              <PlusIcon size={20} fill={color} stroke={color} />
+            )}
           </motion.div>
           <div style={{ backgroundColor: `${color}`, translate: isOnLeft ? '-6px 6px' : '6px 6px' }} className='absolute inset-0 -z-10' />
         </div>

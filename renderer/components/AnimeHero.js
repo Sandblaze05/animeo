@@ -4,7 +4,7 @@ import { motion } from 'motion/react';
 import { useToast } from '../providers/toast-provider';
 import { useRouter } from 'next/router';
 import ParallaxCoverImage from './ParallaxCoverImage';
-import { addAnimeToDefaultList } from '../utils/actions';
+import { addAnimeToDefaultList, isAnimeInDefaultList } from '../utils/actions';
 
 export default function AnimeHero({ animeList }) {
   const { toast } = useToast();
@@ -91,6 +91,17 @@ export default function AnimeHero({ animeList }) {
       return;
     }
 
+    const profileId = typeof window !== 'undefined' ? localStorage.getItem('profileId') : null;
+    try {
+      const exists = await isAnimeInDefaultList(animeData, profileId || undefined);
+      if (exists) {
+        toast('Already added', 'info');
+        return;
+      }
+    } catch (e) {
+      // if the check fails, continue with optimistic add
+    }
+
     // optimistic update
     addingRef.current = true;
     setOptimisticAdded(prev => [...prev, id]);
@@ -98,13 +109,9 @@ export default function AnimeHero({ animeList }) {
     toast('Added to your list!', 'success');
     
     try {
-      // (Note: The updated actions.js already grabs the profileId automatically, 
-      // but passing it explicitly here works perfectly fine too!)
-      const profileId = typeof window !== 'undefined' ? localStorage.getItem('profileId') : null;
       await addAnimeToDefaultList(animeData, profileId || undefined);
       
       try { 
-        // Pages Router equivalent to router.refresh()
         router.replace(router.asPath, undefined, { scroll: false }); 
       } catch (e) { /* ignore */ }
     } catch (error) {

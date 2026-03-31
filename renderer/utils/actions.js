@@ -39,6 +39,20 @@ export async function addAnimeToDefaultList(animeData, userId = getActiveProfile
   return await window.animeo.db.addAnimeToDefaultList(animeData, userId);
 }
 
+export async function isAnimeInDefaultList(animeData, userId = getActiveProfileId()) {
+  try {
+    const list = await getOrCreateDefaultList(userId);
+    const items = await getListItems(list.id, userId);
+    const candidates = new Set([animeData?.id, animeData?.mal_id, animeData?.malId, animeData?.title].filter(Boolean));
+    return items.some(item => {
+      const a = item.anime || {};
+      return (a.id && candidates.has(a.id)) || (a.mal_id && candidates.has(a.mal_id)) || (a.title && candidates.has(a.title));
+    });
+  } catch (e) {
+    return false;
+  }
+}
+
 export async function addListItem(listId, animeData, position = 0, userId = getActiveProfileId()) {
   const data = await window.animeo.db.addListItem(listId, animeData, position, userId);
   return { ...data, anime: animeData };

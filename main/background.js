@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto'
 import { app, ipcMain } from 'electron'
 import serve from 'electron-serve'
 import { createWindow } from './helpers'
+import * as Store from 'electron-store'
 
 const isProd = process.env.NODE_ENV === 'production'
 
@@ -286,14 +287,14 @@ async function initDatabase(dbFilePath) {
 
 function getLists(userId) {
   if (usingFallback) {
-    return inMemory.lists.filter(l => l.user_id === userId).sort((a,b)=>b.created_at.localeCompare(a.created_at));
+    return inMemory.lists.filter(l => l.user_id === userId).sort((a, b) => b.created_at.localeCompare(a.created_at));
   }
   return db.prepare('SELECT id, title, user_id, created_at FROM lists WHERE user_id = ? ORDER BY created_at DESC').all(userId);
 }
 
 function getProfiles() {
   if (usingFallback) {
-    return [...inMemory.profiles].sort((a,b)=>b.created_at.localeCompare(a.created_at));
+    return [...inMemory.profiles].sort((a, b) => b.created_at.localeCompare(a.created_at));
   }
   return db.prepare('SELECT id, name, avatar, created_at FROM profiles ORDER BY created_at DESC').all();
 }
@@ -393,7 +394,7 @@ function getListItems(listId, userId) {
   if (usingFallback) {
     const list = inMemory.lists.find(l => l.id === listId);
     if (!list || (userId && list.user_id !== userId)) throw new Error('List not found');
-    const rows = inMemory.list_items.filter(li => li.list_id === listId).sort((a,b)=>a.position - b.position || a.created_at.localeCompare(b.created_at));
+    const rows = inMemory.list_items.filter(li => li.list_id === listId).sort((a, b) => a.position - b.position || a.created_at.localeCompare(b.created_at));
     return rows.map(r => ({ ...r, anime: JSON.parse(r.anime) }));
   }
   const list = db.prepare('SELECT user_id FROM lists WHERE id = ?').get(listId);
@@ -460,7 +461,7 @@ function addAnimeToDefaultList(animeData, userId) {
     const existing = inMemory.list_items.filter(li => li.list_id === list.id).map(r => ({ id: r.id, anime: JSON.parse(r.anime) }));
     const alreadyExists = existing.some(item => item.anime?.id === animeData.id);
     if (alreadyExists) throw new Error('Anime already in your list');
-    const last = [...inMemory.list_items].filter(li => li.list_id === list.id).sort((a,b)=>b.position - a.position)[0];
+    const last = [...inMemory.list_items].filter(li => li.list_id === list.id).sort((a, b) => b.position - a.position)[0];
     const newPosition = last ? last.position + 1 : 0;
     const inserted = addListItem(list.id, animeData, newPosition, userId);
     return { ...inserted, anime: animeData };
@@ -528,7 +529,54 @@ async function setupAppBackend(rootPath) {
     if (typeof addAnimeToDefaultList === 'function') ipcMain.handle('db:addAnimeToDefaultList', wrap((animeData, userId) => addAnimeToDefaultList(animeData, userId)));
 
     // --- External APIs ---
-      ipcMain.handle('api:all-anime-data', async (event) => {
+
+    const store = new Store();
+
+    const CACHE_TTL = 1000 * 60 * 60 * 4; // 4 hours 
+
+    /**
+     * Reusable caching wrapper for IPC handlers
+     * @param {string} key - The unique name for this piece of data in electron-store
+     * @param {number} ttl - Time to live in milliseconds
+     * @param {function} fetchCallback - The async function that fetches fresh data if needed
+     */
+    async function withCache(key, ttl, fetchCallback) {
+      const now = Date.now();
+      const cachedData = store.get(key);
+      const lastFetchTime = store.get(`${key}_time`) || 0;
+
+      // 1. Return valid cache
+      if (cachedData && (now - lastFetchTime < ttl)) {
+        console.log(`[Main] Serving ${key} from store...`);
+        return { success: true, result: cachedData, cached: true };
+      }
+
+      // 2. Fetch fresh data
+      try {
+        console.log(`[Main] Fetching fresh data for ${key}...`);
+        const freshData = await fetchCallback();
+
+        // 3. Save to store
+        store.set(key, freshData);
+        store.set(`${key}_time`, now);
+
+        return { success: true, result: freshData, cached: false };
+      } catch (err) {
+        // 4. Fallback to stale cache if network fails
+        if (cachedData) {
+          console.warn(`[Main] Fetch failed for ${key}, serving stale data: `, err.message);
+          return { success: true, result: cachedData, cached: true, warning: 'Stale data' };
+        }
+        return { success: false, error: err.message || 'Internal Server Error' };
+      }
+    }
+
+    // ==========================================================
+    // IPC HANDLERS
+    // ==========================================================
+
+    ipcMain.handle('api:all-anime-data', async () => {
+      return await withCache('allAnimeData', CACHE_TTL, async () => {
         const query = `
           query GetTopAiringAnime {
             Page(page: 1, perPage: 10) {
@@ -550,44 +598,47 @@ async function setupAppBackend(rootPath) {
           body: JSON.stringify({ query }),
         };
 
-        try {
-          const response = await fetch('https://graphql.anilist.co', options);
-          const jikan_res = await fetch('https://api.jikan.moe/v4/seasons/now');
-          const data1 = await response.json();
-          const data2 = await jikan_res.json();
+        const [anilistRes, jikanRes] = await Promise.all([
+          fetch('https://graphql.anilist.co', options),
+          fetch('https://api.jikan.moe/v4/seasons/now')
+        ]);
 
-          if (!response.ok || data1.errors) throw new Error("Failed to fetch data from AniList");
-          if (!jikan_res.ok) throw new Error("Failed to fetch data from Jikan");
+        const data1 = await anilistRes.json();
+        const data2 = await jikanRes.json();
 
-          const allAnime = data1.data.Page.media;
-          const jikanData = data2.data;
+        if (!anilistRes.ok || data1.errors) throw new Error("Failed to fetch data from AniList");
+        if (!jikanRes.ok) throw new Error("Failed to fetch data from Jikan");
 
-          const topAiring = allAnime.map((anime) => ({
-            id: anime.id,
-            title: anime.title.english || anime.title.romaji,
-            coverImage: anime.coverImage.extraLarge,
-            score: anime.averageScore,
-            year: anime.startDate.year
-          }));
+        const allAnime = data1.data.Page.media;
+        const jikanData = data2.data;
 
-          const currentSeason = jikanData.slice(0, 11).map((anime) => ({
-            id: anime.mal_id,
-            coverImage: anime.images.webp.large_image_url,
-            title: anime.title_english,
-            type: anime.type,
-            airing: anime.airing,
-            score: anime.score,
-            year: anime.year,
-            season: anime.season
-          }));
+        const topAiring = allAnime.map((anime) => ({
+          id: anime.id,
+          title: anime.title.english || anime.title.romaji,
+          coverImage: anime.coverImage.extraLarge,
+          score: anime.averageScore,
+          year: anime.startDate.year
+        }));
 
-          return { success: true, result: { topAiring, currentSeason } };
-        } catch (err) {
-          return { success: false, error: err.message || 'Internal Server Error' };
-        }
+        const currentSeason = jikanData.slice(0, 11).map((anime) => ({
+          id: anime.mal_id,
+          coverImage: anime.images.webp.large_image_url,
+          title: anime.title_english,
+          type: anime.type,
+          airing: anime.airing,
+          score: anime.score,
+          year: anime.year,
+          season: anime.season
+        }));
+
+        // Whatever is returned here gets saved to electron-store
+        return { topAiring, currentSeason };
       });
+    });
 
-      ipcMain.handle('api:hero-items', async (event) => {
+
+    ipcMain.handle('api:hero-items', async () => {
+      return await withCache('heroItems', CACHE_TTL, async () => {
         const query = `
           query GetTopAiringAnimeForHero {
             Page(page: 1, perPage: 10) {
@@ -609,39 +660,36 @@ async function setupAppBackend(rootPath) {
           body: JSON.stringify({ query }),
         };
 
-        try {
-          const response = await fetch('https://graphql.anilist.co', options);
-          const data = await response.json();
-          if (!response.ok || data.errors) throw new Error("Failed to fetch data from AniList");
+        const response = await fetch('https://graphql.anilist.co', options);
+        const data = await response.json();
+        if (!response.ok || data.errors) throw new Error("Failed to fetch data from AniList");
 
-          const allAnime = data.data.Page.media;
-          const heroItems = allAnime
-            .filter(anime => anime.bannerImage)
-            .map(anime => {
-              const description = anime.description
-                ? anime.description.replace(/<br\s*\/?>/gi, ' ').substring(0, 180) + '...'
-                : 'No description available.';
+        const allAnime = data.data.Page.media;
+        return allAnime
+          .filter(anime => anime.bannerImage)
+          .map(anime => {
+            const description = anime.description
+              ? anime.description.replace(/<br\s*\/?>/gi, ' ').substring(0, 180) + '...'
+              : 'No description available.';
 
-              return {
-                id: anime.id,
-                title: anime.title.english || anime.title.romaji,
-                bannerImage: anime.bannerImage,
-                coverImage: anime.coverImage.extraLarge,
-                description,
-                genres: anime.genres,
-                year: anime.startDate.year,
-                score: anime.averageScore,
-                color: anime.coverImage.color,
-              };
-            });
-
-          return { success: true, result: heroItems };
-        } catch (err) {
-          return { success: false, error: err.message || 'Internal Server Error' };
-        }
+            return {
+              id: anime.id,
+              title: anime.title.english || anime.title.romaji,
+              bannerImage: anime.bannerImage,
+              coverImage: anime.coverImage.extraLarge,
+              description,
+              genres: anime.genres,
+              year: anime.startDate.year,
+              score: anime.averageScore,
+              color: anime.coverImage.color,
+            };
+          });
       });
+    });
 
-      ipcMain.handle('api:movies', async (event) => {
+
+    ipcMain.handle('api:movies', async () => {
+      return await withCache('movies', CACHE_TTL, async () => {
         const query = `
           query GetPopularMovies {
             Page(page: 1, perPage: 20) {
@@ -663,98 +711,94 @@ async function setupAppBackend(rootPath) {
           body: JSON.stringify({ query }),
         };
 
-        try {
-          const response = await fetch('https://graphql.anilist.co', options);
-          const data = await response.json();
-          if (!response.ok || data.errors) throw new Error("Failed to fetch data from AniList");
+        const response = await fetch('https://graphql.anilist.co', options);
+        const data = await response.json();
+        if (!response.ok || data.errors) throw new Error("Failed to fetch data from AniList");
 
-          const allMovies = data.data.Page.media;
-          const movieItems = allMovies.map(anime => {
-            const description = anime.description
-              ? anime.description.replace(/<br\s*\/?>/gi, ' ').substring(0, 180) + '...'
-              : 'No description available.';
+        const allMovies = data.data.Page.media;
+        return allMovies.map(anime => {
+          const description = anime.description
+            ? anime.description.replace(/<br\s*\/?>/gi, ' ').substring(0, 180) + '...'
+            : 'No description available.';
 
-            return {
-              id: anime.id,
-              title: anime.title.english || anime.title.romaji,
-              bannerImage: anime.bannerImage,
-              coverImage: anime.coverImage.extraLarge,
-              description,
-              genres: anime.genres,
-              year: anime.startDate.year,
-              score: anime.averageScore,
-              color: anime.coverImage.color,
-            };
-          });
-
-          return { success: true, result: movieItems };
-        } catch (err) {
-          return { success: false, error: err.message || 'Internal Server Error' };
-        }
-      });
-
-      ipcMain.handle('api:anime:episodes', async (event, malId, jikanPage) => {
-        try {
-          if (!malId) return { success: false, error: 'missing malId' };
-
-          if (jikanPage) {
-            const pageNum = Math.max(1, parseInt(jikanPage, 10) || 1);
-            const { episodes, pagination, ok, status } = await fetchEpisodesPage(malId, pageNum);
-            if (!ok) return { success: false, error: `fetch failed with status ${status || 500}` };
-            return { success: true, result: { episodes, pagination } };
-          }
-
-          const eps = await fetchAllEpisodes(malId);
-          return { success: true, result: { episodes: eps } };
-        } catch (err) {
-          console.error('[Episode Route Error]:', err);
-          return { success: false, error: 'server error' };
-        }
-      });
-
-      ipcMain.handle('api:anime:resolve', async (event, body) => {
-        try {
-          let { title, id } = body ?? {};
-          if (!title && !id) return { success: false, error: 'no input' };
-
-          let matchedMalId = id ? parseInt(id, 10) : null;
-          if (!matchedMalId && title) {
-            const searchResults = await searchMAL(title);
-            if (searchResults.length) {
-              const bestMatch = pickBestMatch(title, searchResults);
-              if (bestMatch) matchedMalId = bestMatch.mal_id;
-            }
-          }
-
-          if (!matchedMalId) return { success: false, error: 'could not resolve id' };
-
-          const rootMalId = await findFranchiseRoot(matchedMalId);
-          const franchiseMap = await discoverFranchise(rootMalId);
-
-          let seasons = Array.from(franchiseMap.values());
-          const jikanMetaList = await Promise.all(seasons.map(s => fetchAnimeMeta(s.malId)));
-
-          seasons = seasons.map((season, i) => mergeSeasonData(season, jikanMetaList[i])).sort((a, b) => {
-            if (a.year && b.year) return a.year - b.year;
-            if (a.aired && b.aired) return new Date(a.aired) - new Date(b.aired);
-            return 0;
-          });
-
-          const payload = {
-            title: title || seasons[0]?.title || 'Unknown Title',
-            rootMalId,
-            matchedMalId,
-            seasons,
+          return {
+            id: anime.id,
+            title: anime.title.english || anime.title.romaji,
+            bannerImage: anime.bannerImage,
+            coverImage: anime.coverImage.extraLarge,
+            description,
+            genres: anime.genres,
+            year: anime.startDate.year,
+            score: anime.averageScore,
+            color: anime.coverImage.color,
           };
-
-          return { success: true, result: payload };
-        } catch (err) {
-          console.error('[Anime Resolve Route Error]:', err);
-          return { success: false, error: 'server error' };
-        }
+        });
       });
+    });
 
-      console.log('Backend Services & IPC handlers established.');
+
+    ipcMain.handle('api:anime:episodes', async (event, malId, jikanPage) => {
+      if (!malId) return { success: false, error: 'missing malId' };
+
+      // Create a dynamic key based on the specific anime and page
+      const cacheKey = `episodes_${malId}_${jikanPage || 'all'}`;
+
+      return await withCache(cacheKey, CACHE_TTL, async () => {
+        if (jikanPage) {
+          const pageNum = Math.max(1, parseInt(jikanPage, 10) || 1);
+          const { episodes, pagination, ok, status } = await fetchEpisodesPage(malId, pageNum);
+          if (!ok) throw new Error(`fetch failed with status ${status || 500}`);
+          return { episodes, pagination };
+        }
+
+        const eps = await fetchAllEpisodes(malId);
+        return { episodes: eps };
+      });
+    });
+
+
+    ipcMain.handle('api:anime:resolve', async (event, body) => {
+      const { title, id } = body ?? {};
+      if (!title && !id) return { success: false, error: 'no input' };
+
+      // Create a dynamic key so we don't re-resolve franchises we've already looked up
+      const cacheKey = `resolve_${id || title.replace(/\s+/g, '_')}`;
+
+      return await withCache(cacheKey, CACHE_TTL, async () => {
+        let matchedMalId = id ? parseInt(id, 10) : null;
+
+        if (!matchedMalId && title) {
+          const searchResults = await searchMAL(title);
+          if (searchResults.length) {
+            const bestMatch = pickBestMatch(title, searchResults);
+            if (bestMatch) matchedMalId = bestMatch.mal_id;
+          }
+        }
+
+        if (!matchedMalId) throw new Error('could not resolve id');
+
+        const rootMalId = await findFranchiseRoot(matchedMalId);
+        const franchiseMap = await discoverFranchise(rootMalId);
+
+        let seasons = Array.from(franchiseMap.values());
+        const jikanMetaList = await Promise.all(seasons.map(s => fetchAnimeMeta(s.malId)));
+
+        seasons = seasons.map((season, i) => mergeSeasonData(season, jikanMetaList[i])).sort((a, b) => {
+          if (a.year && b.year) return a.year - b.year;
+          if (a.aired && b.aired) return new Date(a.aired) - new Date(b.aired);
+          return 0;
+        });
+
+        return {
+          title: title || seasons[0]?.title || 'Unknown Title',
+          rootMalId,
+          matchedMalId,
+          seasons,
+        };
+      });
+    });
+
+    console.log('Backend Services & IPC handlers established.');
   } catch (e) {
     console.warn('Failed to set up DB IPC handlers', e && e.message);
   }
