@@ -40,7 +40,7 @@ export default function ParallaxCoverImage({ animeData }) {
         transformStyle: "preserve-3d",
       }}
       whileTap={{ scale: 0.95 }}
-      // onClick={() => router.push(`/anime?title=${encodeURIComponent(animeData.title)}&id=${animeData.id}`)}
+      onClick={() => router.push(`/anime?title=${encodeURIComponent(animeData.title)}&id=${animeData.id}`)}
       className="hidden md:block shrink-0 w-56 -mb-4 cursor-pointer"
     >
       <div

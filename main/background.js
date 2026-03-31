@@ -582,6 +582,7 @@ async function setupAppBackend(rootPath) {
             Page(page: 1, perPage: 10) {
               media(type: ANIME, status: RELEASING, sort: POPULARITY_DESC) {
                 id
+                idMal
                 title { romaji english }
                 bannerImage
                 coverImage { color extraLarge }
@@ -613,7 +614,7 @@ async function setupAppBackend(rootPath) {
         const jikanData = data2.data;
 
         const topAiring = allAnime.map((anime) => ({
-          id: anime.id,
+          id: anime.idMal,
           title: anime.title.english || anime.title.romaji,
           coverImage: anime.coverImage.extraLarge,
           score: anime.averageScore,
@@ -644,6 +645,7 @@ async function setupAppBackend(rootPath) {
             Page(page: 1, perPage: 10) {
               media(type: ANIME, status: RELEASING, sort: POPULARITY_DESC) {
                 id
+                idMal
                 title { romaji english }
                 bannerImage
                 coverImage { color extraLarge }
@@ -673,7 +675,7 @@ async function setupAppBackend(rootPath) {
               : 'No description available.';
 
             return {
-              id: anime.id,
+              id: anime.idMal,
               title: anime.title.english || anime.title.romaji,
               bannerImage: anime.bannerImage,
               coverImage: anime.coverImage.extraLarge,
@@ -695,6 +697,7 @@ async function setupAppBackend(rootPath) {
             Page(page: 1, perPage: 20) {
               media(type: ANIME, format: MOVIE, sort: POPULARITY_DESC) {
                 id
+                idMal
                 title { romaji english }
                 bannerImage
                 coverImage { color extraLarge }
@@ -722,7 +725,7 @@ async function setupAppBackend(rootPath) {
             : 'No description available.';
 
           return {
-            id: anime.id,
+            id: anime.idMal,
             title: anime.title.english || anime.title.romaji,
             bannerImage: anime.bannerImage,
             coverImage: anime.coverImage.extraLarge,
@@ -823,10 +826,10 @@ async function setupAppBackend(rootPath) {
   mainWindow.setMenuBarVisibility(false);
 
   if (isProd) {
-    await mainWindow.loadURL('app://./home')
+    await mainWindow.loadURL('app://./profiles')
   } else {
     const port = process.argv[2]
-    await mainWindow.loadURL(`http://localhost:${port}/home`)
+    await mainWindow.loadURL(`http://localhost:${port}/profiles`)
     mainWindow.webContents.openDevTools()
   }
 })()

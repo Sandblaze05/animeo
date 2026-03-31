@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react'
 import { X } from 'lucide-react';
 import { AnimatePresence, hover, motion } from 'motion/react';
 import SeasonFlyCard from './SeasonFlyCard';
+import { useRouter } from 'next/router';
 
 const colorMap = {
   0: '#fff893',
@@ -11,6 +12,8 @@ const colorMap = {
 };
 
 const CurrentSeason = ({ currentSeason }) => {
+
+  const router = useRouter();
 
   const [hoveredIndex, setHoveredIndex] = useState(null);
   const [flyCardPosition, setFlyCardPosition] = useState('right');
@@ -52,6 +55,7 @@ const CurrentSeason = ({ currentSeason }) => {
               ref={(el) => (cardRefs.current[idx] = el)}
               onMouseEnter={() => handleMouseEnter(idx)}
               onMouseLeave={() => setHoveredIndex(null)}
+              onClick={(e) => { e.stopPropagation(); router.push(`/anime?id=${anime.id}&title=${anime.title}`); }}
               className='flex relative h-73 w-53 transition-all duration-800 z-10'
               style={{ 
                 filter: `${hoveredIndex !== null && hoveredIndex !== idx ? 'brightness(50%)' : 'brightness(100%)'}`,

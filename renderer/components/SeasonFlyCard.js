@@ -117,7 +117,7 @@ const SeasonFlyCard = ({ anime, color, isOnLeft = false }) => {
           <motion.div
             whileTap={{ x: 4, y: 4 }}
             style={{ border: `1px solid ${color}` }}
-            onClick={() => router.push(`/anime?title=${encodeURIComponent(anime.title)}&id=${anime.id}`)}
+            onClick={(e) => { e.stopPropagation(); router.push(`/watch?mal_id=${anime.id}&season=1&episode=1`); }}
             className='relative h-full w-full bg-[#0b001f] flex items-center justify-center text-xs z-20 cursor-pointer'
           >
             <PlayIcon size={20} stroke={color} />
@@ -130,7 +130,7 @@ const SeasonFlyCard = ({ anime, color, isOnLeft = false }) => {
           <motion.div
             whileTap={{ x: 4, y: 4 }}
             style={{ border: `1px solid ${color}` }}
-            onClick={() => { if (!addingToList) handleAddToList(anime); }}
+            onClick={(e) => { e.stopPropagation(); if (!addingToList) handleAddToList(anime); }}
             aria-disabled={addingToList}
             className={`relative h-full w-full bg-[#0b001f] flex items-center justify-center text-xs z-20 cursor-pointer ${addingToList ? 'opacity-60 pointer-events-none' : ''}`}
           >

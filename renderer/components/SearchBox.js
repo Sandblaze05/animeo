@@ -205,9 +205,9 @@ const SearchBox = ({ onClose }) => {
     <>
       <div className='fixed inset-0 bg-black/50 z-9998' />
       <motion.div
-        initial={{ scale: 1 }}
-        animate={{ scale: [0.95, 1] }}
-        transition={{ duration: 0.2, ease: 'anticipate', delay: 0.2 }}
+        // initial={{ scale: 1 }}
+        // animate={{ scale: [0.95, 1] }}
+        // transition={{ duration: 0.2, ease: 'anticipate', delay: 0.2 }}
         ref={boxRef}
         className='z-9999 transition-all w-[40svw] h-[35svh] bg-black/20 fixed 
         left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-white
