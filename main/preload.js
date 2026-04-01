@@ -103,5 +103,15 @@ contextBridge.exposeInMainWorld('animeo', {
         throw new Error(r?.error || 'Failed to delete profile');
       }
     }
+  },
+
+  // --- ANIME SEARCH HELPERS ---
+  anime: {
+    generateQuery: async (args) => {
+      return await ipcRenderer.invoke('anime:generateQuery', args);
+    },
+    search: async (args) => {
+      return await ipcRenderer.invoke('anime:search', args);
+    }
   }
 });

@@ -90,6 +90,14 @@ export async function getAnimeEpisodes(malId, jikanPage) {
   return await window.animeo.api.animeEpisodes(malId, jikanPage);
 }
 
+export async function generateAnimeQuery(args) {
+  return await window.animeo.anime.generateQuery(args);
+}
+
+export async function searchAnimeSources(args) {
+  return await window.animeo.anime.search(args);
+}
+
 // --- Profiles ---
 
 export async function getProfiles() {

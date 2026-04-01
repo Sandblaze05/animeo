@@ -6,8 +6,11 @@ import { app, ipcMain } from 'electron'
 import serve from 'electron-serve'
 import { createWindow } from './helpers'
 import * as Store from 'electron-store'
+import * as cheerio from 'cheerio'
+import { createApiBay } from 'apibay.org'
 
 const isProd = process.env.NODE_ENV === 'production'
+const apibay = createApiBay()
 
 if (isProd) {
   serve({ directory: 'app' })
@@ -17,6 +20,51 @@ if (isProd) {
 
 // --- Helper Functions for Anime Resolve ---
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
+
+const isTransientFetchError = (err) => {
+  const code = err?.cause?.code || err?.code;
+  if (typeof code === 'string' && ['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EAI_AGAIN'].includes(code)) {
+    return true;
+  }
+
+  const message = String(err?.message || '').toLowerCase();
+  return (
+    message.includes('fetch failed') ||
+    message.includes('network') ||
+    message.includes('timeout')
+  );
+};
+
+const fetchWithRetry = async (url, init = {}, options = {}) => {
+  const {
+    retries = 2,
+    timeoutMs = 12000,
+    retryDelayMs = 600,
+  } = options;
+
+  let lastError;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(url, { ...init, signal: controller.signal });
+      clearTimeout(timeoutId);
+      return res;
+    } catch (err) {
+      clearTimeout(timeoutId);
+      lastError = err;
+
+      const canRetry = attempt < retries && isTransientFetchError(err);
+      if (!canRetry) break;
+
+      await delay(retryDelayMs * (attempt + 1));
+    }
+  }
+
+  throw lastError;
+};
 
 const normalizeTitle = (str = '') =>
   str
@@ -70,6 +118,7 @@ const fetchAniListMedia = async (idMal) => {
     query ($idMal: Int) {
       Media(idMal: $idMal, type: ANIME) {
         idMal season seasonYear format status episodes duration genres averageScore popularity description(asHtml: false)
+        startDate { year month day }
         bannerImage
         coverImage { extraLarge large color }
         title { romaji english native }
@@ -142,6 +191,51 @@ const discoverFranchise = async (rootId) => {
   return visited;
 };
 
+const NON_MAINLINE_FORMATS = new Set(['MOVIE', 'OVA', 'ONA', 'SPECIAL', 'MUSIC']);
+
+const seasonTokenRank = (seasonToken) => {
+  const token = String(seasonToken || '').toUpperCase();
+  if (token === 'WINTER') return 1;
+  if (token === 'SPRING') return 2;
+  if (token === 'SUMMER') return 3;
+  if (token === 'FALL') return 4;
+  return 9;
+};
+
+const getAniListReleaseTimestamp = (entry) => {
+  const startDate = entry?.anilistData?.startDate;
+  const year = Number(startDate?.year);
+  if (!Number.isFinite(year)) return null;
+
+  const month = Number.isFinite(Number(startDate?.month)) ? Number(startDate.month) : 1;
+  const day = Number.isFinite(Number(startDate?.day)) ? Number(startDate.day) : 1;
+  const ts = Date.UTC(year, Math.max(0, month - 1), Math.max(1, day));
+  return Number.isFinite(ts) ? ts : null;
+};
+
+const compareFranchiseEntriesByRelease = (a, b) => {
+  const tsA = getAniListReleaseTimestamp(a);
+  const tsB = getAniListReleaseTimestamp(b);
+  if (tsA != null && tsB != null && tsA !== tsB) return tsA - tsB;
+  if (tsA != null && tsB == null) return -1;
+  if (tsA == null && tsB != null) return 1;
+
+  const yearA = Number.isFinite(Number(a?.year)) ? Number(a.year) : Number.MAX_SAFE_INTEGER;
+  const yearB = Number.isFinite(Number(b?.year)) ? Number(b.year) : Number.MAX_SAFE_INTEGER;
+  if (yearA !== yearB) return yearA - yearB;
+
+  const seasonA = seasonTokenRank(a?.season);
+  const seasonB = seasonTokenRank(b?.season);
+  if (seasonA !== seasonB) return seasonA - seasonB;
+
+  return Number(a?.malId || 0) - Number(b?.malId || 0);
+};
+
+const isMainlineFranchiseEntry = (entry) => {
+  const format = String(entry?.anilistData?.format || '').toUpperCase();
+  return !NON_MAINLINE_FORMATS.has(format);
+};
+
 const fetchAnimeMeta = async (id) => {
   await delay(250);
   const res = await fetch(`https://api.jikan.moe/v4/anime/${id}/full`);
@@ -183,37 +277,56 @@ const fetchAllEpisodes = async (id) => {
   const MAX_PAGES = 15;
 
   while (page <= MAX_PAGES) {
-    await delay(350);
-    try {
-      const res = await fetch(`https://api.jikan.moe/v4/anime/${id}/episodes?page=${page}`);
-      if (!res.ok) {
-        if (res.status === 429) console.warn(`[MAL API] Rate limited on page ${page}. Breaking early.`);
-        break;
+    const { episodes: pageEpisodes, pagination, ok, status } = await fetchEpisodesPage(id, page);
+    if (!ok) {
+      if (status === 429) {
+        console.warn(`[MAL API] Rate limited on page ${page} after retries. Breaking early.`);
       }
-      const json = await res.json();
-      const data = json.data ?? [];
-      if (!data.length) break;
-      episodes.push(...data);
-      if (!json.pagination?.has_next_page) break;
-      page++;
-    } catch (error) {
-      console.error(`[MAL API] Fetch failed on page ${page}:`, error);
       break;
     }
+
+    if (!pageEpisodes.length) break;
+    episodes.push(...pageEpisodes);
+
+    if (!pagination?.has_next_page) break;
+    page = Number.isFinite(Number(pagination?.current_page))
+      ? Number(pagination.current_page) + 1
+      : page + 1;
   }
+
   return episodes;
 };
 
 const fetchEpisodesPage = async (id, page = 1) => {
+  const MAX_RETRIES = 3;
+  let lastError = null;
+
   try {
-    await delay(350);
-    const res = await fetch(`https://api.jikan.moe/v4/anime/${id}/episodes?page=${page}`);
-    if (!res.ok) {
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      await delay(350);
+      const res = await fetch(`https://api.jikan.moe/v4/anime/${id}/episodes?page=${page}`);
+
+      if (res.ok) {
+        const json = await res.json();
+        return { episodes: json.data ?? [], pagination: json.pagination ?? { has_next_page: false, current_page: page }, ok: true };
+      }
+
+      if (res.status === 429 && attempt < MAX_RETRIES) {
+        const retryAfterHeader = Number(res.headers.get('retry-after'));
+        const retryAfterMs = Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
+          ? retryAfterHeader * 1000
+          : 1000 * Math.pow(2, attempt + 1);
+        console.warn(`[MAL API] Rate limited for ${id} page ${page}. Retrying in ${retryAfterMs}ms (attempt ${attempt + 1}/${MAX_RETRIES}).`);
+        await delay(retryAfterMs);
+        continue;
+      }
+
       return { episodes: [], pagination: { has_next_page: false, current_page: page }, ok: false, status: res.status };
     }
-    const json = await res.json();
-    return { episodes: json.data ?? [], pagination: json.pagination ?? { has_next_page: false, current_page: page }, ok: true };
+
+    return { episodes: [], pagination: { has_next_page: false, current_page: page }, ok: false, status: 429 };
   } catch (err) {
+    lastError = err;
     console.error(`[MAL API] fetchEpisodesPage failed for ${id} page ${page}:`, err);
     return { episodes: [], pagination: { has_next_page: false, current_page: page }, ok: false };
   }
@@ -479,6 +592,563 @@ function addAnimeToDefaultList(animeData, userId) {
 
 // --- End Embedded SQLite Helper ---
 
+function pad2(n) {
+  const num = Number(n);
+  if (Number.isNaN(num)) return String(n);
+  return num.toString().padStart(2, '0');
+}
+
+function extractSeasonPart(seasonInput) {
+  const raw = String(seasonInput ?? '').trim();
+  if (!raw) return { seasonNumber: null, partNumber: null, raw: '' };
+
+  const seasonMatch = raw.match(/(?:^|\b)(?:season|s)\s*(\d{1,2})(?:\b|$)/i);
+  const partMatch = raw.match(/(?:^|\b)(?:part|cour)\s*(\d{1,2})(?:\b|$)/i);
+
+  return {
+    seasonNumber: seasonMatch ? Number(seasonMatch[1]) : null,
+    partNumber: partMatch ? Number(partMatch[1]) : null,
+    raw
+  };
+}
+
+function sanitizeAnimeQueryTitle(titleInput) {
+  let title = String(titleInput ?? '').trim();
+  if (!title) return '';
+
+  title = title
+    .replace(/[\u2018\u2019\u201C\u201D]/g, "'")
+    .replace(/[\[\]{}()]/g, ' ')
+    .replace(/\s*[:|\-]\s*final\s*season\b/gi, '')
+    .replace(/\bthe\s+final\s+season\b/gi, '')
+    .replace(/\bfinal\s+season\b/gi, '')
+    .replace(/\bseason\s*\d{1,2}\b/gi, '')
+    .replace(/\b(?:part|cour)\s*\d{1,2}\b/gi, '')
+    .replace(/[,:]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return title;
+}
+
+function hasFinalSeasonHint(...inputs) {
+  const text = inputs
+    .map(v => String(v ?? ''))
+    .join(' ')
+    .toLowerCase();
+  return /\bfinal\s+season\b/.test(text);
+}
+
+function toSeasonLabel(seasonNumber, partNumber) {
+  if (!Number.isFinite(seasonNumber)) return '';
+  if (Number.isFinite(partNumber)) return `Season ${seasonNumber} Part ${partNumber}`;
+  return `Season ${seasonNumber}`;
+}
+
+async function resolveSearchContext(title, seasonInput) {
+  const parsed = extractSeasonPart(seasonInput);
+  const cleanTitle = sanitizeAnimeQueryTitle(title);
+  const finalSeasonHint = hasFinalSeasonHint(title, seasonInput);
+
+  let seasonNumber = parsed.seasonNumber;
+  const partNumber = parsed.partNumber;
+
+  if (Number.isFinite(seasonNumber) && !finalSeasonHint) {
+    return { cleanTitle, seasonNumber, partNumber, inferred: false };
+  }
+
+  try {
+    const searchResults = await searchMAL(cleanTitle || String(title || ''));
+    if (!searchResults?.length) {
+      return { cleanTitle, seasonNumber, partNumber, inferred: false };
+    }
+
+    const best = pickBestMatch(cleanTitle || String(title || ''), searchResults);
+    const matchedMalId = best?.mal_id;
+    if (!matchedMalId) {
+      return { cleanTitle, seasonNumber, partNumber, inferred: false };
+    }
+
+    const rootMalId = await findFranchiseRoot(matchedMalId);
+    const franchiseMap = await discoverFranchise(rootMalId);
+    const orderedMainline = Array.from(franchiseMap.values())
+      .filter(isMainlineFranchiseEntry)
+      .sort(compareFranchiseEntriesByRelease);
+
+    if (!orderedMainline.length) {
+      return { cleanTitle, seasonNumber, partNumber, inferred: false };
+    }
+
+    const matchedIndex = orderedMainline.findIndex(item => Number(item.malId) === Number(matchedMalId));
+    if (finalSeasonHint) {
+      seasonNumber = orderedMainline.length;
+    } else if (!Number.isFinite(seasonNumber) && matchedIndex >= 0) {
+      seasonNumber = matchedIndex + 1;
+    } else if (!Number.isFinite(seasonNumber) && orderedMainline.length === 1) {
+      seasonNumber = 1;
+    }
+
+    return { cleanTitle, seasonNumber, partNumber, inferred: Number.isFinite(seasonNumber) };
+  } catch (err) {
+    console.warn(`[anime:search] Failed to infer season context: ${err?.message || err}`);
+    return { cleanTitle, seasonNumber, partNumber, inferred: false };
+  }
+}
+
+function hasEpisodeMarker(entryTitle, episode) {
+  const epNum = Number(episode);
+  if (!Number.isFinite(epNum)) return false;
+
+  const ep = pad2(epNum);
+  const patterns = [
+    new RegExp(`\\bS\\d{1,2}E${ep}\\b`, 'i'),
+    new RegExp(`\\bS\\d{1,2}E${epNum}\\b`, 'i'),
+    new RegExp(`\\bE${ep}\\b`, 'i'),
+    new RegExp(`\\bE${epNum}\\b`, 'i'),
+    new RegExp(`\\bEP(?:ISODE)?[ ._-]*${ep}\\b`, 'i'),
+    new RegExp(`\\bEP(?:ISODE)?[ ._-]*${epNum}\\b`, 'i')
+  ];
+
+  return patterns.some((re) => re.test(entryTitle));
+}
+
+function hasSeasonMismatch(entryTitle, expectedSeason) {
+  if (!Number.isFinite(expectedSeason)) return false;
+
+  const sxe = entryTitle.match(/\bS(\d{1,2})E\d{1,3}\b/i);
+  if (sxe && Number(sxe[1]) !== expectedSeason) return true;
+
+  const seasonWord = entryTitle.match(/\bSeason\s*(\d{1,2})\b/i);
+  if (seasonWord && Number(seasonWord[1]) !== expectedSeason) return true;
+
+  return false;
+}
+
+function hasPartMismatch(entryTitle, expectedPart) {
+  if (!Number.isFinite(expectedPart)) return false;
+
+  const partWord = entryTitle.match(/\b(?:Part|Cour)\s*(\d{1,2})\b/i);
+  if (partWord && Number(partWord[1]) !== expectedPart) return true;
+
+  return false;
+}
+
+function scoreAnimeSourceMatch({ title, entryTitle, seasonNumber, partNumber, episode }) {
+  const similarity = titleSimilarity(title, entryTitle);
+  const score = Math.round(similarity * 100);
+
+  if (!hasEpisodeMarker(entryTitle, episode)) {
+    return { score: -1, include: false };
+  }
+
+  if (hasSeasonMismatch(entryTitle, seasonNumber)) {
+    return { score: -1, include: false };
+  }
+
+  if (hasPartMismatch(entryTitle, partNumber)) {
+    return { score: -1, include: false };
+  }
+
+  return { score, include: score >= 25 };
+}
+
+function generateSphinxQuery(title, season, episode, options = {}) {
+  if (!title) throw new Error('title is required');
+  if (episode === undefined || episode === null) throw new Error('episode is required');
+
+  const {
+    strict = true,
+    scopeField = 'name',
+    includeLooseNumeric = false,
+    includeNonPadded = false,
+    excludeTerms = ['batch', 'complete', 'compilation', 'pack', 'discussion', 'preview']
+  } = options || {};
+
+  const cleanTitle = String(title).trim();
+  const ep = pad2(episode);
+  const variants = [];
+
+  const scope = strict && scopeField ? `@${scopeField} ` : '';
+
+  const parsed = extractSeasonPart(season);
+  const seasonNumber = parsed.seasonNumber;
+  const partNumber = parsed.partNumber;
+
+  if (Number.isFinite(seasonNumber)) {
+    const sn = pad2(seasonNumber);
+    variants.push(`${scope}="S${sn}E${ep}"`);
+    if (includeNonPadded) {
+      variants.push(`${scope}="S${seasonNumber}E${Number(episode)}"`);
+    }
+    variants.push(`${scope}"Season ${seasonNumber}"`);
+  }
+
+  if (Number.isFinite(partNumber)) {
+    variants.push(`${scope}"Part ${partNumber}"`);
+    variants.push(`${scope}"Cour ${partNumber}"`);
+  }
+
+  variants.push(`${scope}="E${ep}"`);
+  variants.push(`${scope}"Episode ${Number(episode)}"`);
+  variants.push(`${scope}"Ep ${ep}"`);
+  if (includeNonPadded) {
+    variants.push(`${scope}="E${Number(episode)}"`);
+    variants.push(`${scope}"Ep ${Number(episode)}"`);
+  }
+  if (includeLooseNumeric) {
+    variants.push(`${scope}" ${ep} "`);
+  }
+
+  const joined = variants.join(' | ');
+  const titleScoped = `${scope}"${cleanTitle}"`;
+
+  let query = `${titleScoped} & (${joined})`;
+
+  if (strict && excludeTerms && excludeTerms.length) {
+    const excl = excludeTerms
+      .filter(Boolean)
+      .map(t => `-${scope}"${String(t)}"`)
+      .join(' ');
+    if (excl) query = `${query} ${excl}`;
+  }
+
+  return query;
+}
+
+const SEARCH_CACHE_TTL_MS = 1000 * 60 * 20;
+const searchResultCache = new Map();
+
+function stableStringify(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
+}
+
+function getMagnetKey(href) {
+  const raw = String(href || '').trim();
+  if (!raw) return '';
+  if (!raw.toLowerCase().startsWith('magnet:?')) return raw.toLowerCase();
+
+  try {
+    const magnet = new URL(raw);
+    const xt = String(magnet.searchParams.get('xt') || '');
+    const hashMatch = xt.match(/urn:btih:([^&]+)/i);
+    if (hashMatch?.[1]) return `btih:${hashMatch[1].toUpperCase()}`;
+  } catch (err) {
+    const inline = raw.match(/btih:([a-z0-9]+)/i);
+    if (inline?.[1]) return `btih:${inline[1].toUpperCase()}`;
+  }
+
+  return raw.toLowerCase();
+}
+
+function dedupeMagnetResults(results) {
+  const seenMagnets = new Set();
+  const deduped = [];
+
+  for (const result of Array.isArray(results) ? results : []) {
+    const links = Array.isArray(result?.links) ? result.links : [];
+    const uniqueLinks = [];
+
+    for (const link of links) {
+      const href = String(link?.href || '').trim();
+      if (!href) continue;
+
+      const dedupeKey = (link?.isMagnet || href.toLowerCase().startsWith('magnet:?'))
+        ? getMagnetKey(href)
+        : href.toLowerCase();
+
+      if (!dedupeKey || seenMagnets.has(dedupeKey)) continue;
+      seenMagnets.add(dedupeKey);
+      uniqueLinks.push(link);
+    }
+
+    if (!uniqueLinks.length) continue;
+    deduped.push({ ...result, links: uniqueLinks });
+  }
+
+  return deduped;
+}
+
+function setupAnimeHandlers() {
+  ipcMain.handle('anime:generateQuery', (event, args) => {
+    try {
+      const { title, season, episode, options } = args || {};
+      const parsed = extractSeasonPart(season);
+      const cleanTitle = sanitizeAnimeQueryTitle(title);
+      const normalizedSeason = toSeasonLabel(parsed.seasonNumber, parsed.partNumber) || season;
+      const query = generateSphinxQuery(cleanTitle || title, normalizedSeason, episode, options);
+      return { query };
+    } catch (err) {
+      throw new Error(err.message);
+    }
+  });
+
+  ipcMain.handle('anime:search', async (event, args) => {
+    try {
+      const { title, season, episode, options: rawOptions = {} } = args || {};
+      const options = {
+        strict: rawOptions.strict !== undefined ? rawOptions.strict : true,
+        includeLooseNumeric: !!rawOptions.includeLooseNumeric,
+        includeNonPadded: !!rawOptions.includeNonPadded,
+        scopeField: rawOptions.scopeField || 'name',
+        excludeTerms: Array.isArray(rawOptions.excludeTerms)
+          ? rawOptions.excludeTerms
+          : typeof rawOptions.excludeTerms === 'string' && rawOptions.excludeTerms.length
+            ? rawOptions.excludeTerms.split(',').map(s => s.trim()).filter(Boolean)
+            : undefined
+      };
+
+      const context = await resolveSearchContext(title, season);
+      const cleanTitle = context.cleanTitle || String(title || '').trim();
+      const effectiveSeasonNumber = context.seasonNumber;
+      const effectivePartNumber = context.partNumber;
+      const normalizedSeason = toSeasonLabel(effectiveSeasonNumber, effectivePartNumber);
+      const cacheKey = stableStringify({
+        title: cleanTitle,
+        seasonNumber: effectiveSeasonNumber,
+        partNumber: effectivePartNumber,
+        episode: Number(episode),
+        options
+      });
+      const now = Date.now();
+      const cached = searchResultCache.get(cacheKey);
+
+      if (cached && cached.expiresAt > now) {
+        return {
+          ...cached.payload,
+          metadata: {
+            ...(cached.payload?.metadata || {}),
+            cached: true,
+          }
+        };
+      }
+
+      if (cached && cached.expiresAt <= now) {
+        searchResultCache.delete(cacheKey);
+      }
+      let allResults = [];
+
+      // ==========================================
+      // 1. AnimeTosho Fetch Logic (Sphinx Query)
+      // ==========================================
+      const fetchAnimeTosho = async () => {
+        const query = generateSphinxQuery(cleanTitle, normalizedSeason, episode, options);
+        const url = `https://animetosho.org/search?q=${encodeURIComponent(query)}&qx=1`;
+
+        const resp = await fetchWithRetry(url, {
+          headers: { 'User-Agent': 'animeo-scraper/1.0' }
+        }, {
+          retries: 2,
+          timeoutMs: 12000,
+          retryDelayMs: 600,
+        });
+
+        if (!resp.ok) throw new Error(`AnimeTosho failed: ${resp.status}`);
+
+        const html = await resp.text();
+        const $ = cheerio.load(html);
+        const results = [];
+
+        $('.home_list_entry.home_list_entry_alt, .home_list_entry, .home_list_entry_compl_1').each((index, element) => {
+          const titleElement = $(element).find('.link a');
+          const entryTitle = titleElement.text().trim();
+
+          const links = [];
+          $(element).find('.links a.dlink, .links a[href^="magnet:"]').each((linkIndex, linkElement) => {
+            const href = $(linkElement).attr('href');
+            const text = $(linkElement).text().trim();
+            links.push({
+              href,
+              text,
+              isMagnet: href && href.startsWith('magnet:')
+            });
+          });
+
+          if (entryTitle && links.length > 0) {
+            const { score, include } = scoreAnimeSourceMatch({
+              title: cleanTitle, entryTitle, seasonNumber: effectiveSeasonNumber, partNumber: effectivePartNumber, episode
+            });
+            if (include) {
+              results.push({ title: entryTitle, links, score, source: 'AnimeTosho' });
+            }
+          }
+        });
+
+        return { results, query, url };
+      };
+
+      // ==========================================
+      // 2. The Pirate Bay Fetch Logic (Basic Query)
+      // ==========================================
+      const fetchTPB = async () => {
+        // Format season and episode with leading zeros (e.g., S03E01)
+        const sStr = Number.isFinite(effectiveSeasonNumber) ? pad2(effectiveSeasonNumber) : '01';
+        const eStr = Number.isFinite(Number(episode)) ? pad2(episode) : '01';
+        const tpbQuery = Number.isFinite(effectiveSeasonNumber)
+          ? `${cleanTitle} S${sStr}E${eStr}`
+          : `${cleanTitle} E${eStr}`;
+
+        let lastError = null;
+
+        // Prefer API client first: less brittle than scraping HTML and often available when mirrors are flaky.
+        try {
+          const data = await apibay.search({ q: tpbQuery, cat: 200 });
+          const results = [];
+
+          for (const item of Array.isArray(data) ? data.slice(0, 40) : []) {
+            const entryTitle = String(item?.name || '').trim();
+            const hash = String(item?.info_hash || '').trim();
+            if (!entryTitle || !hash) continue;
+
+            const magnetLink = `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(entryTitle)}`;
+            const { score, include } = scoreAnimeSourceMatch({
+              title: cleanTitle,
+              entryTitle,
+              seasonNumber: effectiveSeasonNumber,
+              partNumber: effectivePartNumber,
+              episode,
+            });
+
+            if (include) {
+              results.push({
+                title: entryTitle,
+                links: [{ href: magnetLink, text: 'Magnet', isMagnet: true }],
+                score,
+                source: 'ThePirateBay'
+              });
+            }
+          }
+
+          results.sort((a, b) => b.score - a.score);
+          return { results, query: tpbQuery, url: apibay.getBaseUrl(), available: true };
+        } catch (err) {
+          lastError = err;
+        }
+
+        const mirrors = [
+          'https://tpb.party',
+          'https://thepiratebay10.org',
+          'https://thepiratebay.zone'
+        ];
+
+        for (const base of mirrors) {
+          try {
+            const url = `${base}/search/${encodeURIComponent(tpbQuery)}/1/99/200`;
+            const resp = await fetchWithRetry(url, {
+              headers: { 'User-Agent': 'animeo-scraper/1.0' }
+            }, {
+              retries: 1,
+              timeoutMs: 9000,
+              retryDelayMs: 500,
+            });
+
+            if (!resp.ok) {
+              lastError = new Error(`TPB mirror failed: ${resp.status}`);
+              continue;
+            }
+
+            const html = await resp.text();
+            const $ = cheerio.load(html);
+            const results = [];
+
+            $('table#searchResult tr:has(td)').each((index, element) => {
+              const entryTitle = $(element).find('td').eq(1).find('a').first().text().trim();
+              const magnetLink = $(element).find('a[href^="magnet:"]').attr('href');
+
+              if (entryTitle && magnetLink) {
+                const { score, include } = scoreAnimeSourceMatch({
+                  title: cleanTitle,
+                  entryTitle,
+                  seasonNumber: effectiveSeasonNumber,
+                  partNumber: effectivePartNumber,
+                  episode,
+                });
+
+                if (include) {
+                  results.push({
+                    title: entryTitle,
+                    links: [{ href: magnetLink, text: 'Magnet', isMagnet: true }],
+                    score,
+                    source: 'ThePirateBay'
+                  });
+                }
+              }
+            });
+
+            if (results.length) {
+              results.sort((a, b) => b.score - a.score);
+            }
+
+            return { results, query: tpbQuery, url, available: true };
+          } catch (err) {
+            lastError = err;
+          }
+        }
+
+        return {
+          results: [],
+          query: tpbQuery,
+          url: null,
+          available: false,
+          error: lastError?.message || 'TPB unavailable'
+        };
+      };
+
+      // ==========================================
+      // 3. Execute Both Requests in Parallel
+      // ==========================================
+      const [atResponse, tpbResponse] = await Promise.allSettled([
+        fetchAnimeTosho(),
+        fetchTPB()
+      ]);
+
+      // Combine results safely
+      if (atResponse.status === 'fulfilled') {
+        allResults.push(...atResponse.value.results);
+      } else {
+        console.warn(`[anime:search] AnimeTosho failed: ${atResponse.reason?.message || atResponse.reason}`);
+      }
+
+      if (tpbResponse.status === 'fulfilled') {
+        allResults.push(...tpbResponse.value.results);
+      } else {
+        console.warn(`[anime:search] ThePirateBay failed: ${tpbResponse.reason?.message || tpbResponse.reason}`);
+      }
+
+      // Sort everything by the shared scoring function
+      allResults.sort((a, b) => b.score - a.score);
+      const dedupedResults = dedupeMagnetResults(allResults);
+      const payload = {
+        count: dedupedResults.length,
+        results: dedupedResults,
+        metadata: {
+          animeToshoUrl: atResponse.status === 'fulfilled' ? atResponse.value.url : null,
+          tpbUrl: tpbResponse.status === 'fulfilled' ? tpbResponse.value.url : null,
+          tpbAvailable: tpbResponse.status === 'fulfilled' ? !!tpbResponse.value.available : false,
+          tpbError: tpbResponse.status === 'fulfilled' && !tpbResponse.value.available
+            ? (tpbResponse.value.error || 'TPB unavailable')
+            : null,
+          cached: false,
+          deduped: allResults.length !== dedupedResults.length,
+          originalCount: allResults.length
+        }
+      };
+
+      searchResultCache.set(cacheKey, {
+        expiresAt: now + SEARCH_CACHE_TTL_MS,
+        payload
+      });
+
+      // Optional: You can adjust the return payload to include both URLs/Queries for debugging
+      return payload;
+
+    } catch (err) {
+      throw new Error(err.message);
+    }
+  });
+}
 
 // --- Master Setup Function ---
 async function setupAppBackend(rootPath) {
@@ -493,6 +1163,8 @@ async function setupAppBackend(rootPath) {
 
   // 2. Register IPC Database & API Handlers
   try {
+    setupAnimeHandlers();
+
     // Initialize DB (attempt to load better-sqlite3, fall back to in-memory)
     try {
       await initDatabase(dbFilePath);
