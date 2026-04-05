@@ -74,8 +74,8 @@ contextBridge.exposeInMainWorld('animeo', {
       if (r && r.success) return r.result;
       throw new Error(r?.error || 'API error: movies');
     },
-    animeEpisodes: async (malId, jikanPage) => {
-      const r = await ipcRenderer.invoke('api:anime:episodes', malId, jikanPage);
+    animeEpisodes: async (malId, jikanPage, options) => {
+      const r = await ipcRenderer.invoke('api:anime:episodes', malId, jikanPage, options);
       if (r && r.success) return r.result;
       throw new Error(r?.error || 'API error: animeEpisodes');
     },

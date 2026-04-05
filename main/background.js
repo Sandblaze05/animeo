@@ -98,6 +98,197 @@ const pickBestMatch = (query, results) => {
   return best;
 };
 
+const getKitsuId = (item) => {
+  const id = item?.id;
+  if (typeof id === 'string' && /^\d+$/.test(id)) return Number(id);
+  if (Number.isFinite(Number(id))) return Number(id);
+  return null;
+};
+
+const fetchKitsuAnime = async (query) => {
+  const cleanQuery = String(query || '').trim();
+  if (!cleanQuery) return [];
+
+  const url = `https://kitsu.io/api/edge/anime?filter[text]=${encodeURIComponent(cleanQuery)}&page[limit]=10&sort=popularityRank`;
+  const res = await fetchWithRetry(url, {
+    headers: {
+      'User-Agent': 'animeo-scraper/1.0',
+      'Accept': 'application/vnd.api+json',
+    }
+  }, {
+    retries: 2,
+    timeoutMs: 12000,
+    retryDelayMs: 600,
+  });
+
+  if (!res.ok) return [];
+
+  const json = await res.json();
+  return Array.isArray(json?.data) ? json.data : [];
+};
+
+const fetchKitsuByMalId = async (malId) => {
+  const parsedMalId = Number(malId);
+  if (!Number.isFinite(parsedMalId) || parsedMalId <= 0) return null;
+
+  const url = `https://kitsu.io/api/edge/mappings?filter[externalSite]=myanimelist/anime&filter[externalId]=${parsedMalId}&include=item&page[limit]=1`;
+  const res = await fetchWithRetry(url, {
+    headers: {
+      'User-Agent': 'animeo-scraper/1.0',
+      'Accept': 'application/vnd.api+json',
+    }
+  }, {
+    retries: 2,
+    timeoutMs: 12000,
+    retryDelayMs: 600,
+  });
+
+  if (!res.ok) return null;
+
+  const json = await res.json();
+  const itemRef = json?.data?.[0]?.relationships?.item?.data;
+  const included = Array.isArray(json?.included) ? json.included : [];
+  const kitsuAnime = included.find(i => i?.type === itemRef?.type && String(i?.id) === String(itemRef?.id));
+
+  if (!kitsuAnime?.id) return null;
+
+  return {
+    kitsuId: Number(kitsuAnime.id),
+    kitsuTitle: kitsuAnime?.attributes?.canonicalTitle || kitsuAnime?.attributes?.titles?.en || null,
+    confidence: 1,
+  };
+};
+
+const pickBestKitsuMatch = (query, results) => {
+  let best = null;
+  let bestScore = -1;
+
+  for (const item of results) {
+    const attributes = item?.attributes ?? {};
+    const candidates = [
+      attributes.canonicalTitle,
+      attributes.titles?.en,
+      attributes.titles?.en_jp,
+      attributes.titles?.ja_jp,
+      attributes.slug,
+      ...(Array.isArray(attributes.titles) ? attributes.titles.map(t => t?.title) : []),
+    ].filter(Boolean);
+
+    if (!candidates.length) continue;
+
+    const score = Math.max(...candidates.map(candidate => titleSimilarity(query, candidate)));
+    const exactBonus = candidates.some(candidate => normalizeTitle(candidate) === normalizeTitle(query)) ? 1 : 0;
+    const totalScore = score + exactBonus;
+
+    if (totalScore > bestScore) {
+      bestScore = totalScore;
+      best = item;
+    }
+  }
+
+  return best;
+};
+
+const resolveKitsuContext = async (title, seasonInput, preferredMalId) => {
+  const cleanTitle = sanitizeAnimeQueryTitle(title);
+  const query = cleanTitle || String(title || '').trim();
+  const parsedMalId = Number(preferredMalId);
+
+  if (Number.isFinite(parsedMalId) && parsedMalId > 0) {
+    try {
+      const mapped = await fetchKitsuByMalId(parsedMalId);
+      if (mapped?.kitsuId) {
+        return {
+          cleanTitle,
+          kitsuId: mapped.kitsuId,
+          confidence: mapped.confidence ?? 1,
+          kitsuTitle: mapped.kitsuTitle || query,
+          seasonInput,
+          matchedMalId: parsedMalId,
+          source: 'mal-mapping',
+        };
+      }
+    } catch (err) {
+      console.warn(`[anime:search] Failed Kitsu MAL mapping for ${parsedMalId}: ${err?.message || err}`);
+    }
+  }
+
+  if (!query) return { cleanTitle, kitsuId: null, confidence: 0 };
+
+  try {
+    const results = await fetchKitsuAnime(query);
+    if (!results.length) return { cleanTitle, kitsuId: null, confidence: 0 };
+
+    const best = pickBestKitsuMatch(query, results);
+    const kitsuId = getKitsuId(best);
+    if (!kitsuId) return { cleanTitle, kitsuId: null, confidence: 0 };
+
+    const confidence = Math.min(1, Math.max(0, titleSimilarity(query, best?.attributes?.canonicalTitle || query)));
+    return {
+      cleanTitle,
+      kitsuId,
+      confidence,
+      kitsuTitle: best?.attributes?.canonicalTitle || best?.attributes?.titles?.en || best?.attributes?.titles?.en_jp || query,
+      seasonInput,
+      matchedMalId: Number.isFinite(parsedMalId) ? parsedMalId : null,
+      source: 'title-search',
+    };
+  } catch (err) {
+    console.warn(`[anime:search] Failed to resolve Kitsu context: ${err?.message || err}`);
+    return { cleanTitle, kitsuId: null, confidence: 0 };
+  }
+};
+
+const normalizeStreamResult = (stream, index, sourceLabel) => {
+  const title = String(stream?.title || stream?.name || `${sourceLabel} Stream ${index + 1}`).trim();
+  const directUrl = String(stream?.url || '').trim();
+  const infoHash = String(stream?.infoHash || '').trim();
+  const magnetUrl = infoHash ? `magnet:?xt=urn:btih:${infoHash}` : '';
+  const href = directUrl || magnetUrl;
+
+  return {
+    title,
+    links: href
+      ? [{
+        href,
+        text: directUrl ? 'Open' : 'Magnet',
+        isMagnet: !directUrl,
+      }]
+      : [],
+    score: Number.isFinite(Number(stream?.fileIdx)) ? 100 - Number(stream.fileIdx) : 0,
+    source: sourceLabel,
+    infoHash: infoHash || null,
+    fileIdx: Number.isFinite(Number(stream?.fileIdx)) ? Number(stream.fileIdx) : null,
+    sources: Array.isArray(stream?.sources) ? stream.sources : [],
+    behaviorHints: stream?.behaviorHints || {},
+  };
+};
+
+const normalizeSearchResults = (results) => {
+  const seen = new Set();
+  const deduped = [];
+
+  for (const result of Array.isArray(results) ? results : []) {
+    const links = Array.isArray(result?.links) ? result.links : [];
+    const uniqueLinks = [];
+
+    for (const link of links) {
+      const href = String(link?.href || '').trim();
+      if (!href) continue;
+
+      const key = href.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uniqueLinks.push(link);
+    }
+
+    if (!uniqueLinks.length) continue;
+    deduped.push({ ...result, links: uniqueLinks });
+  }
+
+  return deduped;
+};
+
 const searchMAL = async (query) => {
   const cleanQuery = query
     .replace(/season\s*\d+/gi, '')
@@ -269,6 +460,15 @@ const mergeSeasonData = (season, jikanMeta) => {
     aired: jikanMeta?.aired?.from,
     characters: anilist?.characters?.edges ?? [],
   };
+};
+
+const buildEpisodePlaceholders = (totalCount) => {
+  const total = Math.max(0, Number.isFinite(Number(totalCount)) ? Number(totalCount) : 0);
+  return Array.from({ length: total }, (_, index) => ({
+    mal_id: index + 1,
+    title: `Episode ${index + 1}`,
+    aired: null,
+  }));
 };
 
 const fetchAllEpisodes = async (id) => {
@@ -645,28 +845,33 @@ function toSeasonLabel(seasonNumber, partNumber) {
   return `Season ${seasonNumber}`;
 }
 
-async function resolveSearchContext(title, seasonInput) {
+async function resolveSearchContext(title, seasonInput, preferredMalId) {
   const parsed = extractSeasonPart(seasonInput);
   const cleanTitle = sanitizeAnimeQueryTitle(title);
   const finalSeasonHint = hasFinalSeasonHint(title, seasonInput);
+  const parsedPreferredMalId = Number(preferredMalId);
 
   let seasonNumber = parsed.seasonNumber;
   const partNumber = parsed.partNumber;
 
-  if (Number.isFinite(seasonNumber) && !finalSeasonHint) {
-    return { cleanTitle, seasonNumber, partNumber, inferred: false };
-  }
-
   try {
-    const searchResults = await searchMAL(cleanTitle || String(title || ''));
-    if (!searchResults?.length) {
-      return { cleanTitle, seasonNumber, partNumber, inferred: false };
-    }
+    let matchedMalId = Number.isFinite(parsedPreferredMalId) ? parsedPreferredMalId : null;
 
-    const best = pickBestMatch(cleanTitle || String(title || ''), searchResults);
-    const matchedMalId = best?.mal_id;
     if (!matchedMalId) {
-      return { cleanTitle, seasonNumber, partNumber, inferred: false };
+      if (Number.isFinite(seasonNumber) && !finalSeasonHint) {
+        return { cleanTitle, seasonNumber, partNumber, inferred: false };
+      }
+
+      const searchResults = await searchMAL(cleanTitle || String(title || ''));
+      if (!searchResults?.length) {
+        return { cleanTitle, seasonNumber, partNumber, inferred: false };
+      }
+
+      const best = pickBestMatch(cleanTitle || String(title || ''), searchResults);
+      matchedMalId = best?.mal_id;
+      if (!matchedMalId) {
+        return { cleanTitle, seasonNumber, partNumber, inferred: false };
+      }
     }
 
     const rootMalId = await findFranchiseRoot(matchedMalId);
@@ -688,7 +893,7 @@ async function resolveSearchContext(title, seasonInput) {
       seasonNumber = 1;
     }
 
-    return { cleanTitle, seasonNumber, partNumber, inferred: Number.isFinite(seasonNumber) };
+    return { cleanTitle, seasonNumber, partNumber, inferred: Number.isFinite(seasonNumber), matchedMalId };
   } catch (err) {
     console.warn(`[anime:search] Failed to infer season context: ${err?.message || err}`);
     return { cleanTitle, seasonNumber, partNumber, inferred: false };
@@ -843,34 +1048,6 @@ function getMagnetKey(href) {
   return raw.toLowerCase();
 }
 
-function dedupeMagnetResults(results) {
-  const seenMagnets = new Set();
-  const deduped = [];
-
-  for (const result of Array.isArray(results) ? results : []) {
-    const links = Array.isArray(result?.links) ? result.links : [];
-    const uniqueLinks = [];
-
-    for (const link of links) {
-      const href = String(link?.href || '').trim();
-      if (!href) continue;
-
-      const dedupeKey = (link?.isMagnet || href.toLowerCase().startsWith('magnet:?'))
-        ? getMagnetKey(href)
-        : href.toLowerCase();
-
-      if (!dedupeKey || seenMagnets.has(dedupeKey)) continue;
-      seenMagnets.add(dedupeKey);
-      uniqueLinks.push(link);
-    }
-
-    if (!uniqueLinks.length) continue;
-    deduped.push({ ...result, links: uniqueLinks });
-  }
-
-  return deduped;
-}
-
 function setupAnimeHandlers() {
   ipcMain.handle('anime:generateQuery', (event, args) => {
     try {
@@ -887,7 +1064,7 @@ function setupAnimeHandlers() {
 
   ipcMain.handle('anime:search', async (event, args) => {
     try {
-      const { title, season, episode, options: rawOptions = {} } = args || {};
+      const { title, season, episode, malId, options: rawOptions = {} } = args || {};
       const options = {
         strict: rawOptions.strict !== undefined ? rawOptions.strict : true,
         includeLooseNumeric: !!rawOptions.includeLooseNumeric,
@@ -900,16 +1077,20 @@ function setupAnimeHandlers() {
             : undefined
       };
 
-      const context = await resolveSearchContext(title, season);
+      const context = await resolveSearchContext(title, season, malId);
       const cleanTitle = context.cleanTitle || String(title || '').trim();
       const effectiveSeasonNumber = context.seasonNumber;
       const effectivePartNumber = context.partNumber;
-      const normalizedSeason = toSeasonLabel(effectiveSeasonNumber, effectivePartNumber);
+      const effectiveMalId = Number.isFinite(Number(malId)) ? Number(malId) : Number(context?.matchedMalId);
+      const kitsuContext = await resolveKitsuContext(cleanTitle || title, season, effectiveMalId);
+      const episodeNumber = Number.isFinite(Number(episode)) ? Number(episode) : 1;
       const cacheKey = stableStringify({
         title: cleanTitle,
         seasonNumber: effectiveSeasonNumber,
         partNumber: effectivePartNumber,
-        episode: Number(episode),
+        malId: Number.isFinite(effectiveMalId) ? effectiveMalId : null,
+        kitsuId: kitsuContext.kitsuId,
+        episode: episodeNumber,
         options
       });
       const now = Date.now();
@@ -928,60 +1109,49 @@ function setupAnimeHandlers() {
       if (cached && cached.expiresAt <= now) {
         searchResultCache.delete(cacheKey);
       }
-      let allResults = [];
+      const fetchTorrentio = async () => {
+        if (!kitsuContext?.kitsuId) {
+          return {
+            results: [],
+            url: null,
+            available: false,
+            error: 'could not resolve kitsu id'
+          };
+        }
 
-      // ==========================================
-      // 1. AnimeTosho Fetch Logic (Sphinx Query)
-      // ==========================================
-      const fetchAnimeTosho = async () => {
-        const query = generateSphinxQuery(cleanTitle, normalizedSeason, episode, options);
-        const url = `https://animetosho.org/search?q=${encodeURIComponent(query)}&qx=1`;
-
+        const url = `https://torrentio.strem.fun/stream/anime/kitsu:${kitsuContext.kitsuId}:${episodeNumber}.json`;
         const resp = await fetchWithRetry(url, {
-          headers: { 'User-Agent': 'animeo-scraper/1.0' }
+          headers: {
+            'User-Agent': 'animeo-scraper/1.0',
+            'Accept': 'application/json',
+          }
         }, {
           retries: 2,
           timeoutMs: 12000,
           retryDelayMs: 600,
         });
 
-        if (!resp.ok) throw new Error(`AnimeTosho failed: ${resp.status}`);
+        if (!resp.ok) {
+          return {
+            results: [],
+            url,
+            available: false,
+            error: `Torrentio failed: ${resp.status}`
+          };
+        }
 
-        const html = await resp.text();
-        const $ = cheerio.load(html);
-        const results = [];
+        const json = await resp.json();
+        const streams = Array.isArray(json?.streams) ? json.streams : [];
+        const results = streams.map((stream, index) => normalizeStreamResult(stream, index, 'Torrentio'));
 
-        $('.home_list_entry.home_list_entry_alt, .home_list_entry, .home_list_entry_compl_1').each((index, element) => {
-          const titleElement = $(element).find('.link a');
-          const entryTitle = titleElement.text().trim();
-
-          const links = [];
-          $(element).find('.links a.dlink, .links a[href^="magnet:"]').each((linkIndex, linkElement) => {
-            const href = $(linkElement).attr('href');
-            const text = $(linkElement).text().trim();
-            links.push({
-              href,
-              text,
-              isMagnet: href && href.startsWith('magnet:')
-            });
-          });
-
-          if (entryTitle && links.length > 0) {
-            const { score, include } = scoreAnimeSourceMatch({
-              title: cleanTitle, entryTitle, seasonNumber: effectiveSeasonNumber, partNumber: effectivePartNumber, episode
-            });
-            if (include) {
-              results.push({ title: entryTitle, links, score, source: 'AnimeTosho' });
-            }
-          }
-        });
-
-        return { results, query, url };
+        return {
+          results,
+          url,
+          available: true,
+          error: results.length ? null : 'no streams returned'
+        };
       };
 
-      // ==========================================
-      // 2. The Pirate Bay Fetch Logic (Basic Query)
-      // ==========================================
       const fetchTPB = async () => {
         // Format season and episode with leading zeros (e.g., S03E01)
         const sStr = Number.isFinite(effectiveSeasonNumber) ? pad2(effectiveSeasonNumber) : '01';
@@ -992,7 +1162,6 @@ function setupAnimeHandlers() {
 
         let lastError = null;
 
-        // Prefer API client first: less brittle than scraping HTML and often available when mirrors are flaky.
         try {
           const data = await apibay.search({ q: tpbQuery, cat: 200 });
           const results = [];
@@ -1022,7 +1191,13 @@ function setupAnimeHandlers() {
           }
 
           results.sort((a, b) => b.score - a.score);
-          return { results, query: tpbQuery, url: apibay.getBaseUrl(), available: true };
+          return {
+            results,
+            query: tpbQuery,
+            url: typeof apibay.getBaseUrl === 'function' ? apibay.getBaseUrl() : 'https://apibay.org',
+            available: true,
+            provider: 'apibay',
+          };
         } catch (err) {
           lastError = err;
         }
@@ -1096,43 +1271,35 @@ function setupAnimeHandlers() {
         };
       };
 
-      // ==========================================
-      // 3. Execute Both Requests in Parallel
-      // ==========================================
-      const [atResponse, tpbResponse] = await Promise.allSettled([
-        fetchAnimeTosho(),
-        fetchTPB()
-      ]);
+      const torrentioResponse = await fetchTorrentio();
+      let fallbackResponse = null;
+      let allResults = [];
 
-      // Combine results safely
-      if (atResponse.status === 'fulfilled') {
-        allResults.push(...atResponse.value.results);
+      if (torrentioResponse?.results?.length) {
+        allResults = torrentioResponse.results;
       } else {
-        console.warn(`[anime:search] AnimeTosho failed: ${atResponse.reason?.message || atResponse.reason}`);
+        fallbackResponse = await fetchTPB();
+        allResults = Array.isArray(fallbackResponse?.results) ? fallbackResponse.results : [];
       }
 
-      if (tpbResponse.status === 'fulfilled') {
-        allResults.push(...tpbResponse.value.results);
-      } else {
-        console.warn(`[anime:search] ThePirateBay failed: ${tpbResponse.reason?.message || tpbResponse.reason}`);
-      }
-
-      // Sort everything by the shared scoring function
-      allResults.sort((a, b) => b.score - a.score);
-      const dedupedResults = dedupeMagnetResults(allResults);
+      const dedupedResults = normalizeSearchResults(allResults);
       const payload = {
         count: dedupedResults.length,
         results: dedupedResults,
         metadata: {
-          animeToshoUrl: atResponse.status === 'fulfilled' ? atResponse.value.url : null,
-          tpbUrl: tpbResponse.status === 'fulfilled' ? tpbResponse.value.url : null,
-          tpbAvailable: tpbResponse.status === 'fulfilled' ? !!tpbResponse.value.available : false,
-          tpbError: tpbResponse.status === 'fulfilled' && !tpbResponse.value.available
-            ? (tpbResponse.value.error || 'TPB unavailable')
+          torrentioUrl: torrentioResponse?.url || null,
+          torrentioAvailable: !!torrentioResponse?.available,
+          torrentioError: torrentioResponse?.available === false ? (torrentioResponse?.error || 'Torrentio unavailable') : null,
+          tpbUrl: fallbackResponse?.url || null,
+          tpbAvailable: fallbackResponse ? !!fallbackResponse.available : false,
+          tpbError: fallbackResponse && !fallbackResponse.available
+            ? (fallbackResponse.error || 'TPB unavailable')
             : null,
           cached: false,
           deduped: allResults.length !== dedupedResults.length,
-          originalCount: allResults.length
+          originalCount: allResults.length,
+          source: torrentioResponse?.results?.length ? 'Torrentio' : 'TPB',
+          kitsuId: kitsuContext?.kitsuId || null,
         }
       };
 
@@ -1412,8 +1579,35 @@ async function setupAppBackend(rootPath) {
     });
 
 
-    ipcMain.handle('api:anime:episodes', async (event, malId, jikanPage) => {
+    ipcMain.handle('api:anime:episodes', async (event, malId, jikanPage, options = {}) => {
       if (!malId) return { success: false, error: 'missing malId' };
+
+      const countsOnly = !!options?.countsOnly;
+      const fallbackCount = Number.isFinite(Number(options?.fallbackCount)) ? Number(options.fallbackCount) : null;
+
+      if (countsOnly) {
+        const cacheKey = `episodes_count_only_${malId}_${fallbackCount ?? 'unknown'}`;
+        return await withCache(cacheKey, CACHE_TTL, async () => {
+          let count = fallbackCount;
+
+          if (!Number.isFinite(count) || count <= 0) {
+            const meta = await fetchAnimeMeta(malId);
+            const detected = Number(meta?.episodes);
+            count = Number.isFinite(detected) && detected > 0 ? detected : 0;
+          }
+
+          const episodes = buildEpisodePlaceholders(count);
+          return {
+            episodes,
+            pagination: {
+              current_page: 1,
+              has_next_page: false,
+              items: { total: episodes.length }
+            },
+            countsOnly: true,
+          };
+        });
+      }
 
       // Create a dynamic key based on the specific anime and page
       const cacheKey = `episodes_${malId}_${jikanPage || 'all'}`;

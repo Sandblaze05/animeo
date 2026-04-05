@@ -86,8 +86,8 @@ export async function resolveAnime(body) {
   return await window.animeo.api.animeResolve(body);
 }
 
-export async function getAnimeEpisodes(malId, jikanPage) {
-  return await window.animeo.api.animeEpisodes(malId, jikanPage);
+export async function getAnimeEpisodes(malId, jikanPage, options) {
+  return await window.animeo.api.animeEpisodes(malId, jikanPage, options);
 }
 
 export async function generateAnimeQuery(args) {

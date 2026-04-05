@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useRef } from 'react';
 import DetailsDisplaySkeleton from './Skeletons/DetailsDisplaySkeleton';
 import { useToast } from '../providers/toast-provider';
@@ -28,11 +28,11 @@ export default function DetailsDisplay({ initialTitle, initialId }) {
       try {
         const data = await resolveAnime({ title: initialTitle, id: initialId });
         if (!mounted) return;
-        // initialize seasons with episode-loading flags
+        // initialize seasons with lazy episode-loading flags
         const seasonsInit = (data.seasons || []).map(s => ({
           ...s,
           episodes: s.episodes ?? [],
-          episodesLoading: true,
+          episodesLoading: false,
           episodesError: null,
           episodesPage: 0, // last fetched Jikan page for this season
           episodesHasNext: true, // assume more until API says otherwise
@@ -58,6 +58,13 @@ export default function DetailsDisplay({ initialTitle, initialId }) {
   // Create a stable string like "1234,5678,91011"
   // This only changes when the actual list of seasons changes, not when episodes load.
   const seasonIds = meta.seasons?.map(s => s.malId).join(',') || '';
+
+  // derive season/active season info early so hooks remain stable
+  const { seasons, matchedMalId, rootMalId, title: searchTitle } = meta;
+  const defaultId = matchedMalId ?? rootMalId ?? seasons?.[0]?.malId ?? null;
+  const activeId = activeSeasonId ?? defaultId;
+  const activeSeason = (seasons || []).find(s => s.malId === activeId) ?? (seasons || [])[0] ?? {};
+  const isFranchise = (seasons?.length || 0) > 1;
 
   // Helper to fetch a single Jikan page for a season with a per-season in-flight guard
   const fetchEpisodesFor = async (season, jikanPage = 1) => {
@@ -118,71 +125,76 @@ export default function DetailsDisplay({ initialTitle, initialId }) {
   };
 
 
-  // When seasons are available, stream episodes per-season progressively
-  // When seasons are available, stream episodes per-season progressively
-  useEffect(() => {
-    if (!meta.seasons || !meta.seasons.length) return;
-    let mounted = true;
+  // Load episodes lazily only for the currently viewed season.
+  const ensureEpisodesForSeason = useCallback(async (seasonMalId) => {
+    if (!seasonMalId) return;
 
-    const loadEpisodesSequentially = async () => {
-      // FIX: Use a for...of loop to fetch ONE season at a time, sequentially.
-      for (const season of meta.seasons) {
-        if (!mounted) break;
-        if (season.episodesLoading === false) continue;
+    const season = metaRef.current?.seasons?.find(s => s.malId === seasonMalId);
+    if (!season) return;
 
-        const nextPage = computeNextJikanPage(season);
-        const { episodes: eps, pagination, error } = await fetchEpisodesFor(season, nextPage);
+    const hasLoadedEpisodes = Array.isArray(season.episodes) && season.episodes.length > 0;
+    const hasFetchedAnyPage = Number.isInteger(season.episodesPage) && season.episodesPage > 0;
+    if (season.episodesLoading || hasLoadedEpisodes || hasFetchedAnyPage) return;
 
-        if (!mounted) break;
+    const nextPage = computeNextJikanPage(season) ?? 1;
 
-        if (error) {
-          // Only show the toast if it's not a rate limit, to prevent spam
-          if (!String(error).includes('429')) {
-            toast(error, 'error');
-          }
+    setMeta(prev => ({
+      ...prev,
+      seasons: prev.seasons.map(s =>
+        s.malId === seasonMalId
+          ? { ...s, episodesLoading: true, episodesError: null }
+          : s
+      ),
+    }));
 
-          setMeta(prev => ({
-            ...prev,
-            seasons: prev.seasons.map(s =>
-              s.malId === season.malId
-                ? { ...s, episodesLoading: false, episodesError: error }
-                : s
-            ),
-          }));
-        } else {
-          // Derive totals if Jikan provides items.total or last_visible_page
-          const totalItems = pagination?.items?.total ?? pagination?.total ?? null;
-          const perPage = pagination?.items?.per_page ?? pagination?.items?.perPage ?? null;
-          const lastVisible = pagination?.last_visible_page ?? null;
-          const episodesTotalCount = totalItems ?? (lastVisible && perPage ? lastVisible * perPage : null);
-          const episodesTotalPages = episodesTotalCount ? Math.max(1, Math.ceil(episodesTotalCount / PAGE_SIZE)) : null;
+    const { episodes: eps, pagination, error } = await fetchEpisodesFor(season, nextPage);
 
-          setMeta(prev => ({
-            ...prev,
-            seasons: prev.seasons.map(s =>
-              s.malId === season.malId
-                ? { ...s, episodes: [...(s.episodes || []), ...eps], episodesLoading: false, episodesError: null, episodesPrevPage: s.episodesPage ?? s.episodesPrevPage ?? null, episodesPage: pagination?.current_page ?? nextPage, episodesHasNext: paginationHasNext(pagination), episodesTotalCount, episodesTotalPages }
-                : s
-            ),
-          }));
-        }
-        await new Promise(resolve => setTimeout(resolve, 500));
+    if (error) {
+      if (error !== 'already fetching' && !String(error).includes('429')) {
+        toast(error, 'error');
       }
-    };
 
-    loadEpisodesSequentially();
+      setMeta(prev => ({
+        ...prev,
+        seasons: prev.seasons.map(s =>
+          s.malId === seasonMalId
+            ? { ...s, episodesLoading: false, episodesError: error === 'already fetching' ? null : error }
+            : s
+        ),
+      }));
+      return;
+    }
 
-    return () => { mounted = false; };
-    // Use seasonIds as the dependency, NOT meta.seasons
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seasonIds]);
+    const totalItems = pagination?.items?.total ?? pagination?.total ?? null;
+    const perPage = pagination?.items?.per_page ?? pagination?.items?.perPage ?? null;
+    const lastVisible = pagination?.last_visible_page ?? null;
+    const episodesTotalCount = totalItems ?? (lastVisible && perPage ? lastVisible * perPage : null);
+    const episodesTotalPages = episodesTotalCount ? Math.max(1, Math.ceil(episodesTotalCount / PAGE_SIZE)) : null;
 
-  // derive season/active season info early so hooks remain stable
-  const { seasons, matchedMalId, rootMalId, title: searchTitle } = meta;
-  const defaultId = matchedMalId ?? rootMalId ?? seasons?.[0]?.malId ?? null;
-  const activeId = activeSeasonId ?? defaultId;
-  const activeSeason = (seasons || []).find(s => s.malId === activeId) ?? (seasons || [])[0] ?? {};
-  const isFranchise = (seasons?.length || 0) > 1;
+    setMeta(prev => ({
+      ...prev,
+      seasons: prev.seasons.map(s =>
+        s.malId === seasonMalId
+          ? {
+            ...s,
+            episodes: [...(s.episodes || []), ...(eps || [])],
+            episodesLoading: false,
+            episodesError: null,
+            episodesPrevPage: s.episodesPage ?? s.episodesPrevPage ?? null,
+            episodesPage: pagination?.current_page ?? nextPage,
+            episodesHasNext: paginationHasNext(pagination),
+            episodesTotalCount,
+            episodesTotalPages,
+          }
+          : s
+      ),
+    }));
+  }, [toast]);
+
+  useEffect(() => {
+    if (!activeId || !meta.seasons?.length) return;
+    ensureEpisodesForSeason(activeId);
+  }, [activeId, seasonIds, ensureEpisodesForSeason]);
 
 
   const [episodePageIndex, setEpisodePageIndex] = useState(1);
