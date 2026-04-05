@@ -113,5 +113,23 @@ contextBridge.exposeInMainWorld('animeo', {
     search: async (args) => {
       return await ipcRenderer.invoke('anime:search', args);
     }
+  },
+
+  torrent: {
+    startSession: async (payload) => {
+      const r = await ipcRenderer.invoke('torrent:session:start', payload);
+      if (r && r.success) return r.result;
+      throw new Error(r?.error || 'Failed to start stream session');
+    },
+    getSessionStatus: async (sessionId) => {
+      const r = await ipcRenderer.invoke('torrent:session:status', sessionId);
+      if (r && r.success) return r.result;
+      throw new Error(r?.error || 'Failed to fetch stream session status');
+    },
+    stopSession: async (sessionId) => {
+      const r = await ipcRenderer.invoke('torrent:session:stop', sessionId);
+      if (r && r.success) return r.result;
+      throw new Error(r?.error || 'Failed to stop stream session');
+    }
   }
 });

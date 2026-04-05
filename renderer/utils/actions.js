@@ -98,6 +98,18 @@ export async function searchAnimeSources(args) {
   return await window.animeo.anime.search(args);
 }
 
+export async function startTorrentSession(payload) {
+  return await window.animeo.torrent.startSession(payload);
+}
+
+export async function getTorrentSessionStatus(sessionId) {
+  return await window.animeo.torrent.getSessionStatus(sessionId);
+}
+
+export async function stopTorrentSession(sessionId) {
+  return await window.animeo.torrent.stopSession(sessionId);
+}
+
 // --- Profiles ---
 
 export async function getProfiles() {

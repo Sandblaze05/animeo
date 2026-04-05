@@ -5,12 +5,15 @@ import { randomUUID } from 'crypto'
 import { app, ipcMain } from 'electron'
 import serve from 'electron-serve'
 import { createWindow } from './helpers'
+import { TorrentStreamService } from './services/torrent-stream-service'
 import * as Store from 'electron-store'
 import * as cheerio from 'cheerio'
 import { createApiBay } from 'apibay.org'
 
 const isProd = process.env.NODE_ENV === 'production'
 const apibay = createApiBay()
+let torrentStreamService = null
+let torrentStreamServiceInitError = null
 
 if (isProd) {
   serve({ directory: 'app' })
@@ -243,7 +246,9 @@ const normalizeStreamResult = (stream, index, sourceLabel) => {
   const title = String(stream?.title || stream?.name || `${sourceLabel} Stream ${index + 1}`).trim();
   const directUrl = String(stream?.url || '').trim();
   const infoHash = String(stream?.infoHash || '').trim();
-  const magnetUrl = infoHash ? `magnet:?xt=urn:btih:${infoHash}` : '';
+  const trackers = extractStreamTrackers(stream);
+  const fileNameHint = String(stream?.behaviorHints?.filename || '').trim() || null;
+  const magnetUrl = infoHash ? buildMagnetUri(infoHash, title, trackers) : '';
   const href = directUrl || magnetUrl;
 
   return {
@@ -259,10 +264,74 @@ const normalizeStreamResult = (stream, index, sourceLabel) => {
     source: sourceLabel,
     infoHash: infoHash || null,
     fileIdx: Number.isFinite(Number(stream?.fileIdx)) ? Number(stream.fileIdx) : null,
+    trackers,
+    fileNameHint,
     sources: Array.isArray(stream?.sources) ? stream.sources : [],
     behaviorHints: stream?.behaviorHints || {},
   };
 };
+
+const PUBLIC_TRACKERS = [
+  'wss://tracker.btorrent.xyz',
+  'wss://tracker.openwebtorrent.com',
+  'wss://tracker.webtorrent.dev',
+  'https://tracker.opentrackr.org:443/announce',
+  'udp://tracker.opentrackr.org:1337/announce',
+  'udp://open.demonii.com:1337/announce',
+  'udp://tracker.torrent.eu.org:451/announce',
+  'udp://exodus.desync.com:6969/announce',
+  'udp://tracker.coppersurfer.tk:6969/announce',
+  'udp://tracker.openbittorrent.com:6969/announce',
+  'udp://opentracker.i2p.rocks:6969/announce',
+];
+
+function extractStreamTrackers(stream) {
+  const fromBehavior = Array.isArray(stream?.behaviorHints?.trackers)
+    ? stream.behaviorHints.trackers
+    : [];
+
+  const fromSources = Array.isArray(stream?.sources)
+    ? stream.sources.flatMap((sourceEntry) => {
+      if (typeof sourceEntry === 'string') {
+        return sourceEntry.match(/(?:udp|https?|wss):\/\/[^\s,]+/gi) || [];
+      }
+      if (Array.isArray(sourceEntry?.trackers)) return sourceEntry.trackers;
+      return [];
+    })
+    : [];
+
+  const deduped = new Set();
+  for (const tracker of [...fromBehavior, ...fromSources]) {
+    const clean = String(tracker || '').trim();
+    if (!clean) continue;
+    if (!/^(udp|https?|wss):\/\//i.test(clean)) continue;
+    deduped.add(clean);
+  }
+
+  return Array.from(deduped);
+}
+
+function buildMagnetUri(infoHash, displayName, extraTrackers = []) {
+  const cleanHash = String(infoHash || '').trim();
+  if (!cleanHash) return '';
+
+  const params = [`xt=urn:btih:${encodeURIComponent(cleanHash)}`];
+  const title = String(displayName || '').trim();
+  if (title) {
+    params.push(`dn=${encodeURIComponent(title)}`);
+  }
+
+  const trackers = [...extraTrackers, ...PUBLIC_TRACKERS];
+  const seen = new Set();
+  for (const tracker of trackers) {
+    const clean = String(tracker || '').trim();
+    if (!clean || seen.has(clean)) continue;
+    seen.add(clean);
+    params.push(`tr=${encodeURIComponent(tracker)}`);
+  }
+
+  return `magnet:?${params.join('&')}`;
+}
 
 const normalizeSearchResults = (results) => {
   const seen = new Set();
@@ -1171,7 +1240,7 @@ function setupAnimeHandlers() {
             const hash = String(item?.info_hash || '').trim();
             if (!entryTitle || !hash) continue;
 
-            const magnetLink = `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(entryTitle)}`;
+            const magnetLink = buildMagnetUri(hash, entryTitle);
             const { score, include } = scoreAnimeSourceMatch({
               title: cleanTitle,
               entryTitle,
@@ -1328,6 +1397,18 @@ async function setupAppBackend(rootPath) {
   // This is the absolute path where the ACTUAL database file will live.
   const dbFilePath = path.join(dataDir, 'animeo_data.sqlite');
 
+  if (!torrentStreamService && !torrentStreamServiceInitError) {
+    try {
+      torrentStreamService = new TorrentStreamService({
+        cacheRoot: path.join(dataDir, 'stream-cache'),
+        maxCacheBytes: 8 * 1024 * 1024 * 1024,
+      });
+    } catch (err) {
+      torrentStreamServiceInitError = err?.message || String(err);
+      console.warn('[torrent:session] Service initialization failed:', torrentStreamServiceInitError);
+    }
+  }
+
   // 2. Register IPC Database & API Handlers
   try {
     setupAnimeHandlers();
@@ -1347,6 +1428,39 @@ async function setupAppBackend(rootPath) {
         return { success: false, error: e.message || String(e) };
       }
     };
+
+    // --- Torrent Streaming Session APIs ---
+    ipcMain.handle('torrent:session:start', wrap(async (payload = {}) => {
+      if (!torrentStreamService) {
+        throw new Error(torrentStreamServiceInitError || 'Torrent streaming service is unavailable');
+      }
+
+      const started = await torrentStreamService.startSession({
+        magnetUri: payload.magnetUri,
+        preferredFileIndex: Number.isFinite(Number(payload.preferredFileIndex))
+          ? Number(payload.preferredFileIndex)
+          : null,
+        preferredFileName: payload.fileNameHint || null,
+        trackers: Array.isArray(payload.trackers) ? payload.trackers : [],
+        sourceTitle: payload.sourceTitle || 'Unknown Source',
+      });
+
+      return started;
+    }));
+
+    ipcMain.handle('torrent:session:status', wrap(async (sessionId) => {
+      if (!torrentStreamService) {
+        throw new Error(torrentStreamServiceInitError || 'Torrent streaming service is unavailable');
+      }
+      return torrentStreamService.getSessionStatus(sessionId);
+    }));
+
+    ipcMain.handle('torrent:session:stop', wrap(async (sessionId) => {
+      if (!torrentStreamService) {
+        return { sessionId, stopped: false };
+      }
+      return torrentStreamService.stopSession(sessionId);
+    }));
 
     // --- Database Profiles ---
     if (typeof getProfiles === 'function') ipcMain.handle('api:profiles:get', wrap(() => getProfiles()));
@@ -1702,6 +1816,15 @@ async function setupAppBackend(rootPath) {
 
 app.on('window-all-closed', () => {
   app.quit()
+})
+
+app.on('before-quit', async () => {
+  if (!torrentStreamService) return;
+  try {
+    await torrentStreamService.dispose();
+  } catch (err) {
+    console.warn('[torrent:session] Failed during shutdown cleanup:', err?.message || err);
+  }
 })
 
 ipcMain.on('message', async (event, arg) => {

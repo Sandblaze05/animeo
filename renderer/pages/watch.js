@@ -1,12 +1,19 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter } from 'next/router';
-import { resolveAnime, getAnimeEpisodes, searchAnimeSources } from '../utils/actions';
+import {
+  resolveAnime,
+  getAnimeEpisodes,
+  searchAnimeSources,
+  startTorrentSession,
+  getTorrentSessionStatus,
+  stopTorrentSession,
+} from '../utils/actions';
 import { useToast } from '../providers/toast-provider';
 import {
   Play, Pause, Volume2, Maximize, BarChart3,
   ChevronRight, ExternalLink, Download, Magnet,
   Tv, List, Clock, Calendar, Signal, Loader2,
-  SkipForward, SkipBack, ChevronDown
+  SkipForward, SkipBack, ChevronDown, Square
 } from 'lucide-react';
 
 const WATCH_EPISODES_COUNTS_ONLY = false;
@@ -31,6 +38,29 @@ const retryWithBackoff = async (fn, maxRetries = 3, initialDelayMs = 1000) => {
     }
   }
   throw lastError;
+};
+
+const formatBitrate = (bytesPerSecond) => {
+  const bps = Number(bytesPerSecond) * 8;
+  if (!Number.isFinite(bps) || bps <= 0) return '—';
+  if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(2)} Mbps`;
+  if (bps >= 1_000) return `${(bps / 1_000).toFixed(0)} Kbps`;
+  return `${Math.round(bps)} bps`;
+};
+
+const formatPeerCount = (value) => {
+  const peers = Number(value);
+  if (!Number.isFinite(peers)) return '—';
+  return `${Math.max(0, Math.round(peers))}`;
+};
+
+const formatTime = (seconds) => {
+  const total = Number(seconds);
+  if (!Number.isFinite(total) || total < 0) return '00:00';
+  const rounded = Math.floor(total);
+  const mins = Math.floor(rounded / 60);
+  const secs = rounded % 60;
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 };
 
 /* ═══════════════════════════════════════════════════════════════ */
@@ -59,11 +89,27 @@ export default function WatchPage() {
   const [streamError, setStreamError] = useState(null);
   const [streamPayload, setStreamPayload] = useState({ count: 0, results: [], metadata: {} });
   const [playerHovered, setPlayerHovered] = useState(false);
+  const [streamSession, setStreamSession] = useState(null);
+  const [streamSessionStatus, setStreamSessionStatus] = useState(null);
+  const [streamBooting, setStreamBooting] = useState(false);
+  const [playerError, setPlayerError] = useState(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackState, setPlaybackState] = useState({
+    currentTime: 0,
+    duration: 0,
+    bufferedEnd: 0,
+    isLive: true,
+  });
+  const [liveElapsedSeconds, setLiveElapsedSeconds] = useState(0);
 
   const fetchingRef = useRef(new Set());
   const metaRef = useRef(meta);
   useEffect(() => { metaRef.current = meta; }, [meta]);
   const episodeListRef = useRef(null);
+  const streamSessionRef = useRef(null);
+  const statusPollRef = useRef(null);
+  const hlsRef = useRef(null);
+  const videoRef = useRef(null);
 
   /* ─── 1. RESOLVE FRANCHISE ─────────────────────────────────── */
   useEffect(() => {
@@ -306,6 +352,255 @@ export default function WatchPage() {
     return () => { mounted = false; };
   }, [meta.title, activeSeasonId, activeSeason?.title, activeEpisodeNum, season]);
 
+  const teardownPlayer = useCallback(() => {
+    if (statusPollRef.current) {
+      clearInterval(statusPollRef.current);
+      statusPollRef.current = null;
+    }
+
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.removeAttribute('src');
+      videoRef.current.load();
+    }
+
+    setIsPlaying(false);
+    setPlaybackState({ currentTime: 0, duration: 0, bufferedEnd: 0, isLive: true });
+    setLiveElapsedSeconds(0);
+  }, []);
+
+  const stopActiveSession = useCallback(async () => {
+    const currentSessionId = streamSessionRef.current?.sessionId;
+    teardownPlayer();
+    if (!currentSessionId) return;
+
+    try {
+      await stopTorrentSession(currentSessionId);
+    } catch (err) {
+      console.warn('[watch] Failed to stop stream session:', err?.message || err);
+    } finally {
+      streamSessionRef.current = null;
+      setStreamSession(null);
+      setStreamSessionStatus(null);
+    }
+  }, [teardownPlayer]);
+
+  const attachPlayback = useCallback(async (playlistUrl) => {
+    if (!videoRef.current || !playlistUrl) return;
+    const video = videoRef.current;
+
+    setPlayerError(null);
+
+    if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = playlistUrl;
+      video.preload = 'auto';
+      return;
+    }
+
+    const hlsModule = await import('hls.js');
+    const Hls = hlsModule?.default || hlsModule;
+
+    if (!Hls?.isSupported?.()) {
+      throw new Error('Your runtime does not support HLS playback');
+    }
+
+    const hls = new Hls({
+      enableWorker: true,
+      lowLatencyMode: false,
+      capLevelToPlayerSize: true,
+      maxBufferLength: 30,
+    });
+
+    hls.attachMedia(video);
+    hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+      hls.loadSource(playlistUrl);
+    });
+    hls.on(Hls.Events.ERROR, (event, data) => {
+      if (data?.fatal) {
+        setPlayerError(data?.details || 'Fatal playback error');
+      }
+    });
+
+    hlsRef.current = hls;
+  }, []);
+
+  const beginStatusPolling = useCallback((sessionId) => {
+    if (statusPollRef.current) clearInterval(statusPollRef.current);
+    statusPollRef.current = setInterval(async () => {
+      try {
+        const nextStatus = await getTorrentSessionStatus(sessionId);
+        setStreamSessionStatus(nextStatus);
+      } catch (err) {
+        console.warn('[watch] Failed to poll stream status:', err?.message || err);
+      }
+    }, 2000);
+  }, []);
+
+  const handleStartStream = useCallback(async (entry) => {
+    const magnetLink = (entry?.links || []).find((link) => link?.isMagnet && link?.href);
+    if (!magnetLink?.href) {
+      toastRef.current('No valid magnet link was found for this source', 'error');
+      return;
+    }
+
+    setStreamBooting(true);
+    setPlayerError(null);
+
+    try {
+      await stopActiveSession();
+
+      const createdSession = await startTorrentSession({
+        magnetUri: magnetLink.href,
+        preferredFileIndex: Number.isFinite(Number(entry?.fileIdx)) ? Number(entry.fileIdx) : null,
+        fileNameHint: entry?.fileNameHint || entry?.behaviorHints?.filename || null,
+        trackers: Array.isArray(entry?.trackers) ? entry.trackers : [],
+        sourceTitle: entry?.title || meta.title,
+      });
+
+      streamSessionRef.current = createdSession;
+      setStreamSession(createdSession);
+      setStreamSessionStatus({
+        status: createdSession.status,
+        metrics: { peers: 0, downloadSpeed: 0 },
+        fileName: createdSession.fileName,
+      });
+
+      beginStatusPolling(createdSession.sessionId);
+    } catch (err) {
+      console.error(err);
+      setPlayerError(err?.message || 'Failed to start stream');
+      toastRef.current(err?.message || 'Failed to start stream', 'error');
+    } finally {
+      setStreamBooting(false);
+    }
+  }, [beginStatusPolling, meta.title, stopActiveSession]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const startPlayback = async () => {
+      const playlistUrl = streamSession?.masterPlaylistUrl;
+      if (!playlistUrl) return;
+
+      try {
+        await attachPlayback(playlistUrl);
+        if (cancelled || !videoRef.current) return;
+
+        try {
+          await videoRef.current.play();
+        } catch {
+          if (!videoRef.current) return;
+          videoRef.current.muted = true;
+          await videoRef.current.play();
+        }
+
+        if (!cancelled) {
+          setIsPlaying(true);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        const message = err?.message || 'Failed to attach player';
+        setPlayerError(message);
+        console.error('[watch] Playback attach failed:', err);
+      }
+    };
+
+    startPlayback();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [attachPlayback, streamSession?.masterPlaylistUrl]);
+
+  const togglePlayPause = useCallback(async () => {
+    if (!videoRef.current) return;
+    if (videoRef.current.paused) {
+      try {
+        await videoRef.current.play();
+        setIsPlaying(true);
+      } catch (err) {
+        setPlayerError('Unable to resume playback');
+      }
+      return;
+    }
+
+    videoRef.current.pause();
+    setIsPlaying(false);
+  }, []);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const updatePlaybackState = () => {
+      const duration = Number(video.duration);
+      const isFiniteDuration = Number.isFinite(duration) && duration > 0;
+      const bufferedEnd = video.buffered?.length ? video.buffered.end(video.buffered.length - 1) : 0;
+      const currentTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+
+      setPlaybackState({
+        currentTime,
+        duration: isFiniteDuration ? duration : 0,
+        bufferedEnd: Number.isFinite(bufferedEnd) ? bufferedEnd : 0,
+        isLive: !isFiniteDuration,
+      });
+
+      setLiveElapsedSeconds((prev) => (currentTime > prev ? currentTime : prev));
+    };
+
+    updatePlaybackState();
+
+    video.addEventListener('loadedmetadata', updatePlaybackState);
+    video.addEventListener('durationchange', updatePlaybackState);
+    video.addEventListener('timeupdate', updatePlaybackState);
+    video.addEventListener('progress', updatePlaybackState);
+    video.addEventListener('playing', updatePlaybackState);
+    video.addEventListener('pause', updatePlaybackState);
+    video.addEventListener('waiting', updatePlaybackState);
+
+    return () => {
+      video.removeEventListener('loadedmetadata', updatePlaybackState);
+      video.removeEventListener('durationchange', updatePlaybackState);
+      video.removeEventListener('timeupdate', updatePlaybackState);
+      video.removeEventListener('progress', updatePlaybackState);
+      video.removeEventListener('playing', updatePlaybackState);
+      video.removeEventListener('pause', updatePlaybackState);
+      video.removeEventListener('waiting', updatePlaybackState);
+    };
+  }, [streamSession?.sessionId]);
+
+  const handleSeek = useCallback((event) => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (streamSessionRef.current?.sessionId) {
+      const latestStatus = streamSessionStatus?.status;
+      if (latestStatus && latestStatus !== 'completed') return;
+    }
+
+    const duration = Number(video.duration);
+    if (!Number.isFinite(duration) || duration <= 0) return;
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    video.currentTime = ratio * duration;
+  }, [streamSessionStatus?.status]);
+
+  useEffect(() => {
+    return () => {
+      stopActiveSession();
+    };
+  }, [stopActiveSession]);
+
+  useEffect(() => {
+    stopActiveSession();
+  }, [activeSeasonId, activeEpisodeNum, stopActiveSession]);
+
   /* ─── Scroll active episode into view ──────────────────────── */
   useEffect(() => {
     if (!episodeListRef.current || episodesLoading) return;
@@ -328,6 +623,28 @@ export default function WatchPage() {
 
   /* ─── Derived counts ───────────────────────────────────────── */
   const totalLinks = streamPayload.count || streamPayload.results.reduce((acc, entry) => acc + (entry.links?.length || 0), 0);
+  const streamPeers = formatPeerCount(streamSessionStatus?.metrics?.peers);
+  const streamBitrate = formatBitrate(streamSessionStatus?.metrics?.downloadSpeed);
+  const streamHealth = streamSessionStatus?.status || (streamSession ? 'starting' : 'idle');
+  const isLivePlayback = Boolean(streamSession?.sessionId) && streamHealth !== 'completed';
+  const expectedDurationSeconds = Number.isFinite(Number(streamSessionStatus?.durationSeconds))
+    ? Number(streamSessionStatus.durationSeconds)
+    : null;
+  const durationSeconds = playbackState.duration;
+  const displayCurrentTime = isLivePlayback ? liveElapsedSeconds : playbackState.currentTime;
+  const displayDurationSeconds = isLivePlayback
+    ? (expectedDurationSeconds || 0)
+    : durationSeconds;
+  const progressPercent = displayDurationSeconds > 0
+    ? Math.max(0, Math.min(100, (displayCurrentTime / displayDurationSeconds) * 100))
+    : 0;
+  const bufferedPercent = displayDurationSeconds > 0
+    ? Math.max(0, Math.min(100, (playbackState.bufferedEnd / displayDurationSeconds) * 100))
+    : 0;
+  const streamResolution = (() => {
+    if (!videoRef.current || !videoRef.current.videoHeight) return '—';
+    return `${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`;
+  })();
 
   const activeSeasonStats = [
     { label: 'MAL ID', value: activeSeason?.malId },
@@ -357,7 +674,7 @@ export default function WatchPage() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#04000a] text-white relative pb-16 font-[family-name:var(--font-poppins)] overflow-x-hidden">
+    <div className="min-h-screen bg-[#04000a] text-white relative pb-16 font-poppins overflow-x-hidden">
 
       {/* ── Ambient Backdrop ────────────────────────────────── */}
       <div className="fixed inset-0 h-screen overflow-hidden pointer-events-none z-0">
@@ -373,7 +690,7 @@ export default function WatchPage() {
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,#04000a_100%),linear-gradient(to_bottom,transparent_0%,#04000a_90%)]" />
       </div>
 
-      <div className="max-w-[1600px] mx-auto px-8 pt-10 pb-6 relative z-10">
+      <div className="max-w-400 mx-auto px-8 pt-10 pb-6 relative z-10">
 
         {/* ── Loading ─────────────────────────────────────────── */}
         {loading && (
@@ -400,42 +717,80 @@ export default function WatchPage() {
             <div className="animate-in fade-in slide-in-from-bottom-2 duration-600 delay-100">
               {/* Video Player */}
               <div
-                className="group watch-player relative w-full rounded-[24px] overflow-hidden bg-black aspect-video border border-white/8 shadow-[0_25px_50px_-12px_rgba(0,0,0,0.7),0_0_80px_-20px_rgba(230,0,118,0.15)] transition-all duration-400 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
+                className="group watch-player relative w-full rounded-3xl overflow-hidden bg-black aspect-video border border-white/8 shadow-[0_25px_50px_-12px_rgba(0,0,0,0.7),0_0_80px_-20px_rgba(230,0,118,0.15)] transition-all duration-400 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
                 onMouseEnter={() => setPlayerHovered(true)}
                 onMouseLeave={() => setPlayerHovered(false)}
               >
-                <div className="absolute inset-0 flex items-center justify-center bg-black">
-                  <span className="text-white/10 font-[family-name:var(--font-geist-mono)] text-[0.75rem] tracking-[0.5em] uppercase select-none">Awaiting Signal</span>
-                </div>
+                {streamSession?.masterPlaylistUrl ? (
+                  <video
+                    ref={videoRef}
+                    className="w-full h-full object-contain bg-black"
+                    controls={false}
+                    playsInline
+                    onPlay={() => setIsPlaying(true)}
+                    onPause={() => setIsPlaying(false)}
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black">
+                    <span className="text-white/10 font-(family-name:--font-geist-mono) text-[0.75rem] tracking-[0.5em] uppercase select-none">Awaiting Signal</span>
+                  </div>
+                )}
+
+                {streamBooting && (
+                  <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px] flex items-center justify-center z-20">
+                    <div className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-white/10 bg-black/60 text-white/80 text-[0.75rem] font-bold uppercase tracking-wider">
+                      <Loader2 size={14} className="animate-spin" />
+                      Initializing Stream
+                    </div>
+                  </div>
+                )}
+
+                {playerError && (
+                  <div className="absolute top-5 right-5 z-30 text-[0.7rem] bg-red-500/20 border border-red-500/30 text-red-200 px-3 py-2 rounded-xl max-w-64">
+                    {playerError}
+                  </div>
+                )}
 
                 {/* Stats overlay */}
                 {showStats && (
-                  <div className="absolute top-5 left-5 bg-[#04000a]/85 backdrop-blur-[20px] border border-white/10 p-4 rounded-2xl shadow-[0_15px_35px_rgba(0,0,0,0.4)] text-[0.75rem] font-[family-name:var(--font-geist-mono)] text-white/50 z-40 w-[260px] animate-in zoom-in-95 duration-300">
+                  <div className="absolute top-5 left-5 bg-[#04000a]/85 backdrop-blur-[20px] border border-white/10 p-4 rounded-2xl shadow-[0_15px_35px_rgba(0,0,0,0.4)] text-[0.75rem] font-(family-name:--font-geist-mono) text-white/50 z-40 w-65 animate-in zoom-in-95 duration-300">
                     <div className="text-[#ff71bd] font-extrabold mb-3 text-[0.7rem] uppercase tracking-[0.15em]">
                       Stream Statistics
                     </div>
                     <div className="flex flex-col gap-1.5">
                       <div className="flex justify-between">
                         <span>Resolution</span>
-                        <span className="text-white">—</span>
+                        <span className="text-white">{streamResolution}</span>
                       </div>
                       <div className="flex justify-between">
                         <span>Bitrate</span>
-                        <span className="text-white">—</span>
+                        <span className="text-white">{streamBitrate}</span>
                       </div>
                       <div className="flex justify-between">
-                        <span>Dropped</span>
-                        <span className="text-white">—</span>
+                        <span>Peers</span>
+                        <span className="text-white">{streamPeers}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Status</span>
+                        <span className="text-white uppercase">{streamHealth}</span>
                       </div>
                     </div>
                   </div>
                 )}
 
                 {/* Controls */}
-                <div className="controls-overlay absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent pt-20 px-6 pb-6 opacity-0 group-hover:opacity-100 transition-opacity duration-400 ease-in-out">
-                  <div className="seek-bar w-full h-1 bg-white/15 rounded-full mb-4 cursor-pointer relative transition-all duration-200 group-hover:h-1.5">
-                    <div className="absolute inset-y-0 left-0 w-1/2 bg-white/10 rounded-full -z-10" />
-                    <div className="absolute inset-y-0 left-0 w-[33%] bg-gradient-to-r from-[#ff2d9b] to-[#ff71bd] rounded-full shadow-[0_0_15px_rgba(255,45,155,0.4)]">
+                <div className="controls-overlay absolute bottom-0 inset-x-0 bg-linear-to-t from-black/90 via-black/40 to-transparent pt-20 px-6 pb-6 opacity-0 group-hover:opacity-100 transition-opacity duration-400 ease-in-out">
+                  <div
+                    className="seek-bar w-full h-1 bg-white/15 rounded-full mb-4 cursor-pointer relative transition-all duration-200 group-hover:h-1.5"
+                    onClick={handleSeek}
+                    role="slider"
+                    aria-label="Seek"
+                    aria-valuemin={0}
+                    aria-valuemax={displayDurationSeconds || 0}
+                    aria-valuenow={displayCurrentTime}
+                  >
+                    <div className="absolute inset-y-0 left-0 bg-white/10 rounded-full -z-10" style={{ width: `${bufferedPercent}%` }} />
+                    <div className="absolute inset-y-0 left-0 bg-linear-to-r from-[#ff2d9b] to-[#ff71bd] rounded-full shadow-[0_0_15px_rgba(255,45,155,0.4)]" style={{ width: `${progressPercent}%` }}>
                       <div className="seek-thumb absolute -right-1.5 top-1/2 -translate-y-1/2 scale-0 group-hover:scale-100 w-3.5 h-3.5 bg-white rounded-full shadow-[0_0_15px_rgba(255,45,155,0.8)] transition-transform duration-200 ease-[cubic-bezier(0.175,0.885,0.32,1.275)]" />
                     </div>
                   </div>
@@ -445,8 +800,12 @@ export default function WatchPage() {
                       <button className="bg-transparent border-none text-white/85 cursor-pointer p-1.5 flex items-center justify-center rounded-lg hover:text-white hover:bg-white/10 hover:scale-110 transition-all duration-200 ease-in-out">
                         <SkipBack size={20} fill="currentColor" />
                       </button>
-                      <button className="bg-transparent border-none text-white cursor-pointer p-1.5 flex items-center justify-center rounded-lg hover:bg-white/10 hover:scale-110 transition-all duration-200 ease-in-out">
-                        <Play size={28} fill="currentColor" />
+                      <button
+                        onClick={togglePlayPause}
+                        disabled={!streamSession?.masterPlaylistUrl}
+                        className="bg-transparent border-none text-white cursor-pointer p-1.5 flex items-center justify-center rounded-lg hover:bg-white/10 hover:scale-110 transition-all duration-200 ease-in-out disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        {isPlaying ? <Pause size={28} fill="currentColor" /> : <Play size={28} fill="currentColor" />}
                       </button>
                       <button className="bg-transparent border-none text-white/85 cursor-pointer p-1.5 flex items-center justify-center rounded-lg hover:text-white hover:bg-white/10 hover:scale-110 transition-all duration-200 ease-in-out">
                         <SkipForward size={20} fill="currentColor" />
@@ -455,7 +814,11 @@ export default function WatchPage() {
                       <button className="bg-transparent border-none text-white/85 cursor-pointer p-1.5 flex items-center justify-center rounded-lg hover:text-white hover:bg-white/10 hover:scale-110 transition-all duration-200 ease-in-out">
                         <Volume2 size={20} />
                       </button>
-                      <span className="text-[0.75rem] font-[family-name:var(--font-geist-mono)] text-white/60 tracking-wider font-medium">00:00 / 00:00</span>
+                      <span className="text-[0.75rem] font-(family-name:--font-geist-mono) text-white/60 tracking-wider font-medium">
+                        {isLivePlayback
+                          ? `${formatTime(displayCurrentTime)} / ${expectedDurationSeconds ? `~${formatTime(expectedDurationSeconds)}` : 'LIVE'}`
+                          : `${formatTime(playbackState.currentTime)} / ${formatTime(durationSeconds)}`}
+                      </span>
                     </div>
                     <div className="flex items-center gap-4">
                       <button
@@ -467,8 +830,12 @@ export default function WatchPage() {
                       >
                         Stats
                       </button>
-                      <button className="bg-transparent border-none text-white/85 cursor-pointer p-1.5 flex items-center justify-center rounded-lg hover:text-white hover:bg-white/10 hover:scale-110 transition-all duration-200 ease-in-out">
-                        <Maximize size={20} />
+                      <button
+                        onClick={stopActiveSession}
+                        disabled={!streamSession?.sessionId}
+                        className="bg-transparent border-none text-white/85 cursor-pointer p-1.5 flex items-center justify-center rounded-lg hover:text-white hover:bg-white/10 hover:scale-110 transition-all duration-200 ease-in-out disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        <Square size={18} />
                       </button>
                     </div>
                   </div>
@@ -601,7 +968,7 @@ export default function WatchPage() {
 
                   {/* Empty */}
                   {!streamLoading && !streamError && streamPayload.results.length === 0 && (
-                    <div className="p-16 text-center bg-white/2 rounded-[24px] border border-dashed border-white/10">
+                    <div className="p-16 text-center bg-white/2 rounded-3xl border border-dashed border-white/10">
                       <p className="text-white/30 text-[0.9rem] font-medium">No transmission found for this sector.</p>
                     </div>
                   )}
@@ -614,12 +981,20 @@ export default function WatchPage() {
                         className="group p-3 px-5 rounded-2xl border border-white/6 bg-white/2 flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-6 justify-between hover:bg-white/5 hover:border-white/12 hover:-translate-y-0.5 transition-all duration-300 ease-in-out"
                       >
                         <div className="flex items-start sm:items-center gap-3 sm:gap-4 flex-1 min-w-0 w-full">
-                          <p className="text-[0.875rem] text-white/85 font-semibold break-words leading-snug flex-1 min-w-0">{entry.title}</p>
+                          <p className="text-[0.875rem] text-white/85 font-semibold wrap-break-word leading-snug flex-1 min-w-0">{entry.title}</p>
                           {entry.source && (
                             <span className="text-[0.65rem] px-2 py-1 rounded-md bg-[#ff2d9b]/10 border border-[#ff2d9b]/20 text-[#ff71bd] uppercase tracking-wider font-extrabold shrink-0">{entry.source}</span>
                           )}
                         </div>
                         <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto sm:justify-end">
+                          <button
+                            onClick={() => handleStartStream(entry)}
+                            disabled={streamBooting}
+                            className="text-[0.7rem] px-3 py-2 rounded-xl border border-[#ff2d9b]/30 bg-[#ff2d9b]/15 text-[#ff8cc9] inline-flex items-center gap-1.5 font-bold whitespace-nowrap hover:bg-[#ff2d9b] hover:border-[#ff2d9b] hover:text-white hover:-translate-y-0.5 hover:shadow-[0_4px_12px_rgba(255,45,155,0.4)] transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            {streamBooting ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+                            Stream
+                          </button>
                           {(entry.links || []).slice(0, 3).map((link, linkIdx) => (
                             <a
                               key={`${link.href || link.text}_${linkIdx}`}
@@ -646,7 +1021,7 @@ export default function WatchPage() {
             >
 
               {/* ── Franchise ─────────────────────────────────── */}
-              <div className="rounded-[24px] border border-white/8 bg-[#0a0014]/40 backdrop-blur-[24px] p-5 flex flex-col max-h-[35vh]">
+              <div className="rounded-3xl border border-white/8 bg-[#0a0014]/40 backdrop-blur-xl p-5 flex flex-col max-h-[35vh]">
                 <h3 className="text-[0.75rem] uppercase tracking-[0.2em] font-extrabold text-white/40 mb-4 flex items-center gap-2.5 shrink-0">
                   <Tv size={14} className="opacity-60" />
                   Franchise
@@ -681,13 +1056,13 @@ export default function WatchPage() {
               </div>
 
               {/* ── Episodes ──────────────────────────────────── */}
-              <div className="rounded-[24px] border border-white/8 bg-[#0a0014]/40 backdrop-blur-[24px] flex flex-col flex-1 overflow-hidden min-h-[450px]">
+              <div className="rounded-3xl border border-white/8 bg-[#0a0014]/40 backdrop-blur-xl flex flex-col flex-1 overflow-hidden min-h-112.5">
                 <div className="p-5 border-b border-white/6 flex items-center justify-between shrink-0 bg-white/2">
                   <h3 className="text-[0.75rem] uppercase tracking-[0.2em] font-extrabold text-white/40 flex items-center gap-2.5">
                     <List size={14} className="opacity-60" />
                     Episodes
                   </h3>
-                  <span className="text-[0.7rem] text-white/30 font-bold font-[family-name:var(--font-geist-mono)] bg-white/5 px-2 py-1 rounded-md">
+                  <span className="text-[0.7rem] text-white/30 font-bold font-(family-name:--font-geist-mono) bg-white/5 px-2 py-1 rounded-md">
                     {episodesLoading ? 'SYNCING' : `${episodes.length} INDEXED`}
                   </span>
                 </div>
