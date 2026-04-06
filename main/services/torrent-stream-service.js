@@ -7,16 +7,24 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 
 const VIDEO_EXTENSIONS = new Set(['.mkv', '.mp4', '.avi', '.mov', '.webm', '.m4v']);
-const DEFAULT_CACHE_LIMIT_BYTES = 8 * 1024 * 1024 * 1024;
+
+const DEFAULT_CACHE_LIMIT_BYTES = 10 * 1024 * 1024 * 1024;
+const DEFAULT_MAX_CACHE_TORRENTS = 25;
+const DEFAULT_CACHE_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+const DEFAULT_IDLE_TIMEOUT_MS = 60 * 60 * 1000;
+
 const METADATA_TIMEOUT_MS = 120000;
-const HLS_PLAYLIST_TIMEOUT_MS = 120000;
-const FIRST_DATA_TIMEOUT_MS = 180000;
 const DHT_WARMUP_MS = 8000;
 const TORRENT_CONNECTIONS = 100;
-const TORRENT_UPLOADS = 10;
 const TORRENT_PORT = Number.isFinite(Number(process.env.ANIMEO_TORRENT_PORT))
     ? Number(process.env.ANIMEO_TORRENT_PORT)
     : 6881;
+
+const WARM_LEADING_BYTES = 5 * 1024 * 1024;
+const KEEP_HEAD_BYTES = 100 * 1024 * 1024;
+const SEEK_BEHIND_BYTES = 8 * 1024 * 1024;
+const SEEK_AHEAD_BYTES = 60 * 1024 * 1024;
+
 const FALLBACK_TRACKERS = [
     'wss://tracker.btorrent.xyz',
     'wss://tracker.openwebtorrent.com',
@@ -34,11 +42,7 @@ function sanitizeFileNameSegment(input) {
 }
 
 function rmrf(targetPath) {
-    try {
-        fs.rmSync(targetPath, { recursive: true, force: true });
-    } catch (err) {
-        // Best effort cleanup only.
-    }
+    try { fs.rmSync(targetPath, { recursive: true, force: true }); } catch { /* best-effort */ }
 }
 
 function dirSizeBytes(root) {
@@ -49,34 +53,12 @@ function dirSizeBytes(root) {
         const current = stack.pop();
         const stat = fs.statSync(current);
         if (stat.isDirectory()) {
-            const children = fs.readdirSync(current);
-            for (const child of children) {
-                stack.push(path.join(current, child));
-            }
+            for (const child of fs.readdirSync(current)) stack.push(path.join(current, child));
         } else {
             total += stat.size;
         }
     }
     return total;
-}
-
-function listSessionDirs(cacheRoot) {
-    if (!fs.existsSync(cacheRoot)) return [];
-    return fs
-        .readdirSync(cacheRoot)
-        .map((name) => path.join(cacheRoot, name))
-        .filter((sessionPath) => {
-            try {
-                return fs.statSync(sessionPath).isDirectory();
-            } catch {
-                return false;
-            }
-        })
-        .sort((a, b) => {
-            const aStat = fs.statSync(a);
-            const bStat = fs.statSync(b);
-            return aStat.mtimeMs - bStat.mtimeMs;
-        });
 }
 
 function parseMagnetHash(magnetUri = '') {
@@ -109,7 +91,6 @@ function pickPlayableFile(files, preferredIndex, preferredFileName) {
 
     const videoFiles = files.filter((file) => VIDEO_EXTENSIONS.has(path.extname(file.name || '').toLowerCase()));
     if (!videoFiles.length) return null;
-
     return videoFiles.sort((a, b) => (b.length || 0) - (a.length || 0))[0];
 }
 
@@ -118,144 +99,18 @@ function safeNumber(value, fallback = 0) {
     return Number.isFinite(n) ? n : fallback;
 }
 
-function collectHlsArtifacts(outputDir) {
-    const files = [];
-    const stack = [outputDir];
-
-    while (stack.length) {
-        const current = stack.pop();
-        if (!fs.existsSync(current)) continue;
-        const stat = fs.statSync(current);
-        if (stat.isDirectory()) {
-            for (const child of fs.readdirSync(current)) {
-                stack.push(path.join(current, child));
-            }
-            continue;
-        }
-
-        const rel = path.relative(outputDir, current).replace(/\\/g, '/');
-        if (rel.endsWith('.m3u8') || rel.endsWith('.ts')) {
-            files.push(rel);
-        }
-    }
-
-    return files.sort();
-}
-
-function buildSyntheticMasterPlaylist(outputDir) {
-    const variants = [
-        { folder: 'v0', bandwidth: 5800000, resolution: '1920x1080' },
-        { folder: 'v1080p', bandwidth: 5800000, resolution: '1920x1080' },
-        { folder: 'v1', bandwidth: 3000000, resolution: '1280x720' },
-        { folder: 'v720p', bandwidth: 3000000, resolution: '1280x720' },
-        { folder: 'v2', bandwidth: 1400000, resolution: '854x480' },
-        { folder: 'v480p', bandwidth: 1400000, resolution: '854x480' },
-    ].filter((variant) => fs.existsSync(path.join(outputDir, variant.folder, 'index.m3u8')));
-
-    if (!variants.length) return null;
-
-    const lines = ['#EXTM3U', '#EXT-X-VERSION:3'];
-    for (const variant of variants) {
-        lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=${variant.bandwidth},RESOLUTION=${variant.resolution}`);
-        lines.push(`${variant.folder}/index.m3u8`);
-    }
-
-    const masterPath = path.join(outputDir, 'master.m3u8');
-    fs.writeFileSync(masterPath, `${lines.join('\n')}\n`, 'utf8');
-    return masterPath;
-}
-
-function playlistHasSegmentEntries(playlistPath) {
-    try {
-        const text = fs.readFileSync(playlistPath, 'utf8');
-        return /\.(ts|m4s)(\?.*)?$/im.test(text);
-    } catch {
-        return false;
-    }
-}
-
-async function waitForFirstDataChunk(stream, options = {}) {
-    const {
-        timeoutMs = FIRST_DATA_TIMEOUT_MS,
-        onTick,
-    } = options;
-
-    return await new Promise((resolve, reject) => {
-        let settled = false;
-
-        const cleanup = () => {
-            settled = true;
-            clearTimeout(timeoutId);
-            clearInterval(tickId);
-            stream.removeListener('data', onData);
-            stream.removeListener('error', onError);
-            stream.removeListener('close', onClose);
-            stream.removeListener('end', onEnd);
-        };
-
-        const onData = (chunk) => {
-            if (settled) return;
-            stream.pause();
-            if (chunk && chunk.length) stream.unshift(chunk);
-            cleanup();
-            resolve(chunk);
-        };
-
-        const onError = (err) => {
-            if (settled) return;
-            cleanup();
-            reject(err);
-        };
-
-        const onClose = () => {
-            if (settled) return;
-            cleanup();
-            reject(new Error('Torrent file stream closed before delivering data'));
-        };
-
-        const onEnd = () => {
-            if (settled) return;
-            cleanup();
-            reject(new Error('Torrent file stream ended before delivering data'));
-        };
-
-        const timeoutId = setTimeout(() => {
-            if (settled) return;
-            cleanup();
-            reject(new Error('Timed out waiting for first torrent bytes'));
-        }, timeoutMs);
-
-        const tickId = typeof onTick === 'function'
-            ? setInterval(() => {
-                try { onTick(); } catch { /* ignore */ }
-            }, 5000)
-            : null;
-
-        stream.once('error', onError);
-        stream.once('close', onClose);
-        stream.once('end', onEnd);
-        stream.once('data', onData);
-
-        stream.resume();
-    });
-}
-
 function ensureMagnetTrackers(magnetUri, extraTrackers = []) {
     const uri = String(magnetUri || '').trim();
     if (!uri.toLowerCase().startsWith('magnet:?')) return uri;
 
     let parsed;
-    try {
-        parsed = new URL(uri);
-    } catch {
-        return uri;
-    }
+    try { parsed = new URL(uri); } catch { return uri; }
 
-    const currentTrackers = new Set(parsed.searchParams.getAll('tr').map((t) => String(t || '').trim()).filter(Boolean));
-    const enrichedTrackers = [
-        ...extraTrackers,
-        ...FALLBACK_TRACKERS,
-    ].map((t) => String(t || '').trim()).filter(Boolean);
+    const currentTrackers = new Set(
+        parsed.searchParams.getAll('tr').map((t) => String(t || '').trim()).filter(Boolean)
+    );
+    const enrichedTrackers = [...extraTrackers, ...FALLBACK_TRACKERS]
+        .map((t) => String(t || '').trim()).filter(Boolean);
 
     for (const tracker of enrichedTrackers) {
         if (!currentTrackers.has(tracker)) {
@@ -263,18 +118,19 @@ function ensureMagnetTrackers(magnetUri, extraTrackers = []) {
             currentTrackers.add(tracker);
         }
     }
-
-    if (currentTrackers.size === 0) {
-        for (const tracker of FALLBACK_TRACKERS) {
-            parsed.searchParams.append('tr', tracker);
-        }
-    }
-
     return parsed.toString();
 }
 
 function wait(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function fileSelect(file, start, end, priority = 0) {
+    try { file.select(start, end, priority); } catch { /* ignore */ }
+}
+
+function fileDeselect(file, start, end) {
+    try { file.deselect(start, end, true); } catch { /* ignore */ }
 }
 
 export class TorrentStreamService {
@@ -283,23 +139,194 @@ export class TorrentStreamService {
         this.maxCacheBytes = Number.isFinite(Number(options.maxCacheBytes))
             ? Number(options.maxCacheBytes)
             : DEFAULT_CACHE_LIMIT_BYTES;
+        this.maxCacheTorrents = Number.isFinite(Number(options.maxCacheTorrents))
+            ? Number(options.maxCacheTorrents)
+            : DEFAULT_MAX_CACHE_TORRENTS;
+        this.cacheMaxAgeMs = Number.isFinite(Number(options.cacheMaxAgeMs))
+            ? Number(options.cacheMaxAgeMs)
+            : DEFAULT_CACHE_MAX_AGE_MS;
+        this.idleTimeoutMs = Number.isFinite(Number(options.idleTimeoutMs))
+            ? Number(options.idleTimeoutMs)
+            : DEFAULT_IDLE_TIMEOUT_MS;
+
         this.port = Number.isFinite(Number(options.port)) ? Number(options.port) : 0;
 
         fs.mkdirSync(this.cacheRoot, { recursive: true });
 
         this.sessions = new Map();
+        this.torrentPool = new Map(); // infoHash -> { torrent, lastAccess }
+
         this.server = null;
         this.serverPort = null;
 
+        this.cacheIndexPath = path.join(this.cacheRoot, 'index.json');
+        this.cacheIndex = this._loadCacheIndex();
+
         this.WebTorrent = require('webtorrent');
-        this.ffmpegPath = require('ffmpeg-static');
+        this.client = new this.WebTorrent({
+            dht: true,
+            tracker: true,
+            utp: false,
+            maxConns: TORRENT_CONNECTIONS,
+            torrentPort: TORRENT_PORT,
+            dhtPort: TORRENT_PORT + 1,
+        });
 
         const ffprobeStatic = require('ffprobe-static');
         this.ffprobePath = ffprobeStatic?.path || null;
 
-        this.ffmpeg = require('fluent-ffmpeg');
-        if (this.ffmpegPath) this.ffmpeg.setFfmpegPath(this.ffmpegPath);
-        if (this.ffprobePath) this.ffmpeg.setFfprobePath(this.ffprobePath);
+        this._idleSweepTimer = setInterval(() => {
+            this._cleanupIdleTorrents().catch(() => { /* ignore */ });
+        }, 5 * 60 * 1000);
+    }
+
+    _loadCacheIndex() {
+        try {
+            if (!fs.existsSync(this.cacheIndexPath)) return {};
+            const parsed = JSON.parse(fs.readFileSync(this.cacheIndexPath, 'utf8'));
+            return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch {
+            return {};
+        }
+    }
+
+    _saveCacheIndex() {
+        try {
+            fs.writeFileSync(this.cacheIndexPath, JSON.stringify(this.cacheIndex, null, 2), 'utf8');
+        } catch {
+            // best effort
+        }
+    }
+
+    _touchCacheEntry(infoHash, explicitSize) {
+        const key = String(infoHash || '').toUpperCase();
+        if (!key) return;
+        const torrentPath = path.join(this.cacheRoot, key);
+        const size = Number.isFinite(Number(explicitSize)) ? Number(explicitSize) : dirSizeBytes(torrentPath);
+        this.cacheIndex[key] = {
+            lastAccess: Date.now(),
+            size: Math.max(0, size),
+        };
+        this._saveCacheIndex();
+    }
+
+    _dropCacheEntry(infoHash) {
+        const key = String(infoHash || '').toUpperCase();
+        if (!key) return;
+        delete this.cacheIndex[key];
+        this._saveCacheIndex();
+    }
+
+    _activeInfoHashes() {
+        const set = new Set();
+        for (const session of this.sessions.values()) {
+            if (session?.infoHash) set.add(String(session.infoHash).toUpperCase());
+        }
+        return set;
+    }
+
+    async _removeTorrentCache(infoHash) {
+        const key = String(infoHash || '').toUpperCase();
+        if (!key) return;
+
+        const active = this._activeInfoHashes();
+        if (active.has(key)) return;
+
+        const pooled = this.torrentPool.get(key);
+        if (pooled?.torrent) {
+            await new Promise((resolve) => {
+                try {
+                    this.client.remove(pooled.torrent, { destroyStore: true }, () => resolve());
+                } catch {
+                    resolve();
+                }
+            });
+            this.torrentPool.delete(key);
+        }
+
+        rmrf(path.join(this.cacheRoot, key));
+        this._dropCacheEntry(key);
+    }
+
+    async _cleanupIdleTorrents() {
+        const now = Date.now();
+        const active = this._activeInfoHashes();
+
+        for (const [infoHash, entry] of this.torrentPool.entries()) {
+            if (active.has(infoHash)) continue;
+            if (!entry?.lastAccess) continue;
+            if (now - entry.lastAccess < this.idleTimeoutMs) continue;
+
+            await new Promise((resolve) => {
+                try {
+                    this.client.remove(entry.torrent, { destroyStore: false }, () => resolve());
+                } catch {
+                    resolve();
+                }
+            });
+            this.torrentPool.delete(infoHash);
+        }
+    }
+
+    async _enforceCacheLimits() {
+        const active = this._activeInfoHashes();
+        const now = Date.now();
+
+        for (const infoHash of Object.keys(this.cacheIndex)) {
+            const key = String(infoHash).toUpperCase();
+            const torrentPath = path.join(this.cacheRoot, key);
+            if (!fs.existsSync(torrentPath)) {
+                delete this.cacheIndex[key];
+                continue;
+            }
+
+            const entry = this.cacheIndex[key] || {};
+            entry.size = dirSizeBytes(torrentPath);
+            entry.lastAccess = Number.isFinite(Number(entry.lastAccess)) ? Number(entry.lastAccess) : now;
+            this.cacheIndex[key] = entry;
+        }
+
+        const keys = Object.keys(this.cacheIndex)
+            .map((k) => String(k).toUpperCase())
+            .sort((a, b) => (this.cacheIndex[a].lastAccess || 0) - (this.cacheIndex[b].lastAccess || 0));
+
+        for (const key of keys) {
+            if (active.has(key)) continue;
+            const ageMs = now - (this.cacheIndex[key]?.lastAccess || 0);
+            if (ageMs > this.cacheMaxAgeMs) {
+                await this._removeTorrentCache(key);
+            }
+        }
+
+        let remaining = Object.keys(this.cacheIndex)
+            .map((k) => String(k).toUpperCase())
+            .filter((k) => !active.has(k))
+            .sort((a, b) => (this.cacheIndex[a].lastAccess || 0) - (this.cacheIndex[b].lastAccess || 0));
+
+        while (remaining.length > this.maxCacheTorrents) {
+            const oldest = remaining.shift();
+            await this._removeTorrentCache(oldest);
+            remaining = Object.keys(this.cacheIndex)
+                .map((k) => String(k).toUpperCase())
+                .filter((k) => !active.has(k))
+                .sort((a, b) => (this.cacheIndex[a].lastAccess || 0) - (this.cacheIndex[b].lastAccess || 0));
+        }
+
+        let totalSize = Object.values(this.cacheIndex)
+            .reduce((sum, entry) => sum + safeNumber(entry?.size), 0);
+
+        remaining = Object.keys(this.cacheIndex)
+            .map((k) => String(k).toUpperCase())
+            .filter((k) => !active.has(k))
+            .sort((a, b) => (this.cacheIndex[a].lastAccess || 0) - (this.cacheIndex[b].lastAccess || 0));
+
+        while (totalSize > this.maxCacheBytes && remaining.length) {
+            const oldest = remaining.shift();
+            totalSize -= safeNumber(this.cacheIndex[oldest]?.size);
+            await this._removeTorrentCache(oldest);
+        }
+
+        this._saveCacheIndex();
     }
 
     async ensureServer() {
@@ -307,6 +334,7 @@ export class TorrentStreamService {
 
         this.server = http.createServer((req, res) => {
             const url = new URL(req.url || '/', 'http://127.0.0.1');
+
             if (url.pathname === '/health') {
                 res.writeHead(200, {
                     'Content-Type': 'application/json; charset=utf-8',
@@ -317,51 +345,108 @@ export class TorrentStreamService {
             }
 
             const parts = url.pathname.split('/').filter(Boolean);
-            if (parts.length < 3 || parts[0] !== 'hls') {
-                res.writeHead(404, { 'Access-Control-Allow-Origin': '*' });
-                res.end('Not found');
+            const routeType = parts[0];
+
+            if (routeType === 'raw' && parts.length === 2) {
+                const sessionId = sanitizeFileNameSegment(parts[1]);
+                const session = this.sessions.get(sessionId);
+                if (!session?.torrentFile) {
+                    res.writeHead(404, { 'Access-Control-Allow-Origin': '*' });
+                    res.end('Raw file not available');
+                    return;
+                }
+
+                const torrentFile = session.torrentFile;
+                const totalSize = session.fileSize;
+                const ext = path.extname(torrentFile.name || '').toLowerCase();
+                const mimeMap = {
+                    '.mkv': 'video/x-matroska',
+                    '.mp4': 'video/mp4',
+                    '.avi': 'video/x-msvideo',
+                    '.mov': 'video/quicktime',
+                    '.webm': 'video/webm',
+                    '.m4v': 'video/mp4',
+                };
+                const contentType = mimeMap[ext] || 'application/octet-stream';
+
+                const rangeHeader = req.headers['range'];
+                if (rangeHeader) {
+                    const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+                    if (!match) {
+                        res.writeHead(416, {
+                            'Content-Range': `bytes */${totalSize}`,
+                            'Access-Control-Allow-Origin': '*',
+                        });
+                        res.end();
+                        return;
+                    }
+
+                    const start = parseInt(match[1], 10);
+                    const end = match[2] ? parseInt(match[2], 10) : totalSize - 1;
+                    if (start >= totalSize || end >= totalSize || start > end) {
+                        res.writeHead(416, {
+                            'Content-Range': `bytes */${totalSize}`,
+                            'Access-Control-Allow-Origin': '*',
+                        });
+                        res.end();
+                        return;
+                    }
+
+                    this._prioritizeWindow(session, start, end);
+
+                    const chunkSize = end - start + 1;
+                    res.writeHead(206, {
+                        'Content-Type': contentType,
+                        'Content-Length': chunkSize,
+                        'Content-Range': `bytes ${start}-${end}/${totalSize}`,
+                        'Accept-Ranges': 'bytes',
+                        'Access-Control-Allow-Origin': '*',
+                    });
+
+                    const stream = torrentFile.createReadStream({ start, end });
+                    stream.on('error', () => {
+                        if (!res.headersSent) res.writeHead(500);
+                        res.end();
+                    });
+                    stream.pipe(res);
+                } else {
+                    const start = session.lastReadOffset || 0;
+                    const end = Math.min(totalSize - 1, start + SEEK_AHEAD_BYTES);
+                    this._prioritizeWindow(session, start, end);
+
+                    res.writeHead(200, {
+                        'Content-Type': contentType,
+                        'Content-Length': totalSize,
+                        'Accept-Ranges': 'bytes',
+                        'Access-Control-Allow-Origin': '*',
+                    });
+                    const stream = torrentFile.createReadStream();
+                    stream.on('error', () => res.end());
+                    stream.pipe(res);
+                }
                 return;
             }
 
-            const sessionId = sanitizeFileNameSegment(parts[1]);
-            const session = this.sessions.get(sessionId);
-            if (!session) {
-                res.writeHead(404, { 'Access-Control-Allow-Origin': '*' });
-                res.end('Session not found');
+            if (routeType === 'seek' && parts.length === 2 && req.method === 'POST') {
+                const sessionId = sanitizeFileNameSegment(parts[1]);
+                const targetSeconds = parseFloat(url.searchParams.get('t') || '0');
+                this.seekSession(sessionId, targetSeconds)
+                    .then((result) => {
+                        res.writeHead(200, {
+                            'Content-Type': 'application/json',
+                            'Access-Control-Allow-Origin': '*',
+                        });
+                        res.end(JSON.stringify(result));
+                    })
+                    .catch((err) => {
+                        res.writeHead(500, { 'Access-Control-Allow-Origin': '*' });
+                        res.end(JSON.stringify({ error: err.message }));
+                    });
                 return;
             }
 
-            const relativePath = decodeURIComponent(parts.slice(2).join('/'));
-            const normalizedRel = path.normalize(relativePath).replace(/^\.+[\\/]/, '');
-            const absolutePath = path.resolve(session.outputDir, normalizedRel);
-            const outputRoot = path.resolve(session.outputDir);
-
-            if (!absolutePath.startsWith(outputRoot)) {
-                res.writeHead(400, { 'Access-Control-Allow-Origin': '*' });
-                res.end('Invalid path');
-                return;
-            }
-
-            if (!fs.existsSync(absolutePath)) {
-                res.writeHead(404, { 'Access-Control-Allow-Origin': '*' });
-                res.end('Segment not ready');
-                return;
-            }
-
-            const ext = path.extname(absolutePath).toLowerCase();
-            const contentType =
-                ext === '.m3u8'
-                    ? 'application/vnd.apple.mpegurl'
-                    : ext === '.ts'
-                        ? 'video/mp2t'
-                        : 'application/octet-stream';
-
-            res.writeHead(200, {
-                'Content-Type': contentType,
-                'Cache-Control': 'public, max-age=10',
-                'Access-Control-Allow-Origin': '*',
-            });
-            fs.createReadStream(absolutePath).pipe(res);
+            res.writeHead(404, { 'Access-Control-Allow-Origin': '*' });
+            res.end('Not found');
         });
 
         await new Promise((resolve, reject) => {
@@ -375,219 +460,233 @@ export class TorrentStreamService {
         return this.serverPort;
     }
 
-    getSessionStatus(sessionId) {
-        const session = this.sessions.get(sessionId);
-        if (!session) throw new Error('Stream session not found');
+    async probeDuration(rawUrl) {
+        if (!this.ffprobePath) return null;
+        return new Promise((resolve) => {
+            const args = [
+                '-v', 'quiet',
+                '-print_format', 'json',
+                '-show_format',
+                '-analyzeduration', '10M',
+                '-probesize', '10M',
+                rawUrl,
+            ];
+            const proc = spawn(this.ffprobePath, args, {
+                windowsHide: true,
+                stdio: ['ignore', 'pipe', 'ignore'],
+            });
 
-        const torrent = session.torrent;
-        const peers = safeNumber(torrent?.numPeers);
-        const downloadSpeed = safeNumber(torrent?.downloadSpeed);
-        const uploadSpeed = safeNumber(torrent?.uploadSpeed);
-        const progressPercent = safeNumber(torrent?.downloaded) > 0 && safeNumber(torrent?.length) > 0
-            ? (safeNumber(torrent?.downloaded) / safeNumber(torrent?.length)) * 100
-            : 0;
-        const now = Date.now();
+            let output = '';
+            proc.stdout.on('data', (chunk) => { output += chunk.toString(); });
 
-        return {
-            sessionId,
-            status: session.status,
-            playlistReady: this.resolveMasterPlaylistPath(session) !== null,
-            masterPlaylistUrl: this.getMasterPlaylistUrl(sessionId),
-            durationSeconds: Number.isFinite(session.durationSeconds) ? session.durationSeconds : null,
-            message: session.message || null,
-            startedAt: session.startedAt,
-            uptimeMs: now - session.startedAt,
-            sourceTitle: session.sourceTitle,
-            fileName: session.fileName,
-            metrics: {
-                peers: safeNumber(peers),
-                progress: safeNumber(progressPercent),
-                downloadSpeed: safeNumber(downloadSpeed),
-                uploadSpeed: safeNumber(uploadSpeed),
-            },
-            renditions: [
-                { label: '1080p', bandwidth: 5800000, resolution: '1920x1080' },
-                { label: '720p', bandwidth: 3000000, resolution: '1280x720' },
-                { label: '480p', bandwidth: 1400000, resolution: '854x480' },
-            ],
-        };
+            const timeoutId = setTimeout(() => {
+                try { proc.kill(); } catch { /* ignore */ }
+                resolve(null);
+            }, 30000);
+
+            proc.on('close', () => {
+                clearTimeout(timeoutId);
+                try {
+                    const json = JSON.parse(output);
+                    const dur = parseFloat(json?.format?.duration);
+                    resolve(Number.isFinite(dur) && dur > 0 ? dur : null);
+                } catch {
+                    resolve(null);
+                }
+            });
+
+            proc.on('error', () => {
+                clearTimeout(timeoutId);
+                resolve(null);
+            });
+        });
     }
 
-    resolveMasterPlaylistPath(session) {
-        if (!session) return null;
-
-        const preferredRelative = session.masterPlaylistRelative || 'master.m3u8';
-        const preferredAbsolute = path.join(session.outputDir, preferredRelative);
-        if (fs.existsSync(preferredAbsolute)) return preferredAbsolute;
-
-        const candidates = [
-            path.join(session.outputDir, 'master.m3u8'),
-            path.join(session.outputDir, 'v0', 'master.m3u8'),
-            path.join(session.outputDir, 'v1080p', 'master.m3u8'),
-        ];
-
-        for (const candidate of candidates) {
-            if (fs.existsSync(candidate)) return candidate;
-        }
-
-        return null;
-    }
-
-    getMasterPlaylistUrl(sessionId) {
+    getStreamingUrl(sessionId) {
         if (!this.serverPort) return null;
-        const session = this.sessions.get(sessionId);
-        const relativePath = session?.masterPlaylistRelative || 'master.m3u8';
-        return `http://127.0.0.1:${this.serverPort}/hls/${sessionId}/${relativePath}`;
+        return `http://127.0.0.1:${this.serverPort}/raw/${sessionId}`;
     }
 
     logSession(session, message, level = 'log') {
         const prefix = `[stream:${session?.id || 'unknown'}]`;
-        const logger = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
-        logger(`${prefix} ${message}`);
+        (level === 'error' ? console.error : level === 'warn' ? console.warn : console.log)(`${prefix} ${message}`);
+    }
+
+    _prioritizeWindow(session, startByte, endByte) {
+        const file = session?.torrentFile;
+        if (!file || typeof file.select !== 'function' || !session.fileSize) return;
+
+        const boundedStart = Math.max(0, Math.floor(startByte));
+        const boundedEnd = Math.min(session.fileSize - 1, Math.floor(endByte));
+
+        const dynamicStart = Math.max(0, boundedStart - SEEK_BEHIND_BYTES);
+        const dynamicEnd = Math.min(session.fileSize - 1, boundedEnd + SEEK_AHEAD_BYTES);
+
+        fileSelect(file, 0, Math.min(session.fileSize - 1, KEEP_HEAD_BYTES - 1), 1);
+
+        if (session.dynamicWindow) {
+            fileDeselect(file, session.dynamicWindow.start, session.dynamicWindow.end);
+        }
+
+        fileSelect(file, dynamicStart, dynamicEnd, 10);
+        session.dynamicWindow = { start: dynamicStart, end: dynamicEnd };
+        session.lastReadOffset = boundedStart;
+
+        if (session.infoHash) {
+            const poolEntry = this.torrentPool.get(session.infoHash);
+            if (poolEntry) poolEntry.lastAccess = Date.now();
+            this._touchCacheEntry(session.infoHash);
+        }
+    }
+
+    async _warmLeadingPieces(session, warmBytes = WARM_LEADING_BYTES) {
+        const file = session.torrentFile;
+        if (!file || typeof file.createReadStream !== 'function' || !session.fileSize) return;
+
+        const end = Math.min(warmBytes - 1, session.fileSize - 1);
+        this._prioritizeWindow(session, 0, end);
+
+        this.logSession(session, `Warming first ${Math.round(warmBytes / 1024 / 1024)}MB of torrent pieces (bytes 0-${end})...`);
+
+        return new Promise((resolve) => {
+            const stream = file.createReadStream({ start: 0, end });
+            const timeout = setTimeout(() => {
+                this.logSession(session, 'Piece warm-up timed out, proceeding', 'warn');
+                stream.destroy();
+                resolve();
+            }, 20000);
+
+            let received = 0;
+            stream.on('data', (chunk) => { received += chunk.length; });
+            stream.on('end', () => {
+                clearTimeout(timeout);
+                this.logSession(session, `Piece warm-up complete (${Math.round(received / 1024)}KB received)`);
+                resolve();
+            });
+            stream.on('error', (err) => {
+                clearTimeout(timeout);
+                this.logSession(session, `Piece warm-up error: ${err.message}`, 'warn');
+                resolve();
+            });
+        });
+    }
+
+    async _getOrCreateTorrent(cleanMagnet, infoHashHint, trackers, sourceTitle) {
+        const key = String(infoHashHint || '').toUpperCase();
+
+        if (key) {
+            const pooled = this.torrentPool.get(key);
+            if (pooled?.torrent) {
+                pooled.lastAccess = Date.now();
+                return pooled.torrent;
+            }
+
+            const existing = this.client.get(key);
+            if (existing) {
+                this.torrentPool.set(key, { torrent: existing, lastAccess: Date.now() });
+                return existing;
+            }
+        }
+
+        const announce = Array.from(new Set([...(Array.isArray(trackers) ? trackers : []), ...FALLBACK_TRACKERS]));
+        const torrentPath = path.join(this.cacheRoot, key || `pending_${Date.now()}`);
+        fs.mkdirSync(torrentPath, { recursive: true });
+
+        const torrent = this.client.add(cleanMagnet, {
+            path: torrentPath,
+            announce,
+        });
+
+        const waitForReady = new Promise((resolve, reject) => {
+            const timeoutId = setTimeout(() => reject(new Error('Timed out waiting for torrent metadata')), METADATA_TIMEOUT_MS);
+            const onReady = () => {
+                clearTimeout(timeoutId);
+                torrent.removeListener('error', onError);
+                resolve();
+            };
+            const onError = (err) => {
+                clearTimeout(timeoutId);
+                torrent.removeListener('ready', onReady);
+                reject(err);
+            };
+            torrent.once('ready', onReady);
+            torrent.once('error', onError);
+        });
+
+        await waitForReady;
+
+        const infoHash = String(torrent.infoHash || key || '').toUpperCase();
+        const finalPath = path.join(this.cacheRoot, infoHash);
+        if (!fs.existsSync(finalPath)) {
+            fs.mkdirSync(finalPath, { recursive: true });
+        }
+
+        this.torrentPool.set(infoHash, {
+            torrent,
+            lastAccess: Date.now(),
+        });
+
+        this._touchCacheEntry(infoHash);
+        this.logSession({ id: infoHash }, `Torrent cache key ready for source "${sourceTitle}"`);
+
+        return torrent;
     }
 
     async startSession({ magnetUri, preferredFileIndex = null, preferredFileName = null, trackers = [], sourceTitle = 'Unknown Source' }) {
-        const WebTorrent = this.WebTorrent;
         const cleanMagnet = ensureMagnetTrackers(magnetUri, trackers);
         if (!String(cleanMagnet || '').toLowerCase().startsWith('magnet:?')) {
             throw new Error('Invalid magnet URI');
         }
 
-        const sessionId = `${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
-        const sessionDir = path.join(this.cacheRoot, sanitizeFileNameSegment(sessionId));
-        const outputDir = path.join(sessionDir, 'hls');
-        fs.mkdirSync(outputDir, { recursive: true });
-
         await this.ensureServer();
 
+        const sessionId = `${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
         const session = {
             id: sessionId,
             status: 'initializing',
             startedAt: Date.now(),
             sourceTitle,
-            outputDir,
-            sessionDir,
-            client: null,
             torrent: null,
-            ffmpegProcess: null,
+            torrentFile: null,
+            fileSize: 0,
             fileName: null,
-            masterPlaylistRelative: null,
-            bytesFromTorrent: 0,
             durationSeconds: null,
             message: 'Waiting for torrent metadata',
             seenPeers: new Set(),
             peerLogLimitReached: false,
+            dynamicWindow: null,
+            lastReadOffset: 0,
+            infoHash: parseMagnetHash(cleanMagnet),
+            wireListener: null,
         };
 
         this.sessions.set(sessionId, session);
         this.logSession(session, `Starting session for source "${sourceTitle}"`);
-        this.logSession(session, `Magnet hash: ${parseMagnetHash(cleanMagnet) || 'unknown'} | trackers: ${new URL(cleanMagnet).searchParams.getAll('tr').length}`);
+        this.logSession(session, `Magnet hash: ${session.infoHash || 'unknown'}`);
 
-        const createClient = (profile = 'hybrid') => {
-            const useTrackerOnlyTcp = profile === 'tracker-tcp';
-            return new WebTorrent({
-                dht: !useTrackerOnlyTcp,
-                tracker: true,
-                utp: false,
-                maxConns: TORRENT_CONNECTIONS,
-                torrentPort: TORRENT_PORT,
-                dhtPort: TORRENT_PORT + 1,
-            });
-        };
+        const torrent = await this._getOrCreateTorrent(cleanMagnet, session.infoHash, trackers, sourceTitle);
+        session.torrent = torrent;
+        session.infoHash = String(torrent.infoHash || session.infoHash || '').toUpperCase();
 
-        const attachTorrentDiagnostics = (torrentRef) => {
-            if (!torrentRef || torrentRef.__animeoDiagnosticsAttached) return;
-            torrentRef.__animeoDiagnosticsAttached = true;
+        session.wireListener = (wire) => {
+            const peer = wire?.remoteAddress || wire?.peerAddress || 'unknown-peer';
+            if (session.seenPeers.has(peer)) return;
+            session.seenPeers.add(peer);
 
-            torrentRef.on('wire', (wire) => {
-                const peer = wire?.remoteAddress || wire?.peerAddress || 'unknown-peer';
-                if (session.seenPeers.has(peer)) return;
-                session.seenPeers.add(peer);
-
-                const maxPeerLogs = 30;
-                if (session.seenPeers.size <= maxPeerLogs) {
-                    this.logSession(session, `New peer connected: ${peer}`);
-                    return;
-                }
-
-                if (!session.peerLogLimitReached) {
-                    session.peerLogLimitReached = true;
-                    this.logSession(session, `Peer log limit reached (${maxPeerLogs}). Further peer logs are suppressed.`);
-                }
-            });
-        };
-
-        const waitForTorrentReady = async (torrent) => {
-            return await new Promise((resolve, reject) => {
-                const timeoutId = setTimeout(() => reject(new Error('Timed out waiting for torrent metadata')), METADATA_TIMEOUT_MS);
-                const onReady = () => {
-                    clearTimeout(timeoutId);
-                    torrent.removeListener('error', onError);
-                    resolve();
-                };
-                const onError = (err) => {
-                    clearTimeout(timeoutId);
-                    torrent.removeListener('ready', onReady);
-                    reject(err);
-                };
-
-                torrent.once('ready', onReady);
-                torrent.once('error', onError);
-            });
-        };
-
-        let torrent = null;
-        let client = null;
-        let lastEngineError = null;
-        const networkProfiles = ['hybrid', 'tracker-tcp'];
-
-        for (let attempt = 1; attempt <= networkProfiles.length; attempt++) {
-            const profile = networkProfiles[attempt - 1];
-            client = createClient(profile);
-            const announce = Array.from(new Set([...trackers, ...FALLBACK_TRACKERS]));
-            torrent = client.add(cleanMagnet, {
-                path: sessionDir,
-                announce,
-            });
-            session.client = client;
-            session.torrent = torrent;
-            attachTorrentDiagnostics(torrent);
-            try {
-                session.message = attempt === 1
-                    ? 'Discovering torrent metadata'
-                    : 'Retrying torrent metadata discovery';
-                this.logSession(session, `${session.message} (attempt ${attempt}/${networkProfiles.length}, profile=${profile})`);
-                await waitForTorrentReady(torrent);
-                lastEngineError = null;
-                this.logSession(session, `Metadata ready. Files discovered: ${Array.isArray(torrent.files) ? torrent.files.length : 0}`);
-
-                const initialPeers = safeNumber(torrent?.numPeers);
-                if (initialPeers === 0) {
-                    this.logSession(session, 'No peers yet, waiting for DHT bootstrap...');
-                    await wait(DHT_WARMUP_MS);
-                    const peersAfterWarmup = safeNumber(torrent?.numPeers);
-                    this.logSession(session, `Peers after warm-up: ${peersAfterWarmup}`);
-
-                    if (peersAfterWarmup === 0 && attempt < networkProfiles.length) {
-                        this.logSession(session, `No peers on profile=${profile}, switching to next network profile`, 'warn');
-                        await new Promise((resolve) => client.destroy(() => resolve()));
-                        session.client = null;
-                        session.torrent = null;
-                        continue;
-                    }
-                }
-                break;
-            } catch (err) {
-                lastEngineError = err;
-                this.logSession(session, `Metadata attempt ${attempt} failed: ${err?.message || err}`, 'warn');
-                await new Promise((resolve) => client.destroy(() => resolve()));
-                session.client = null;
-                session.torrent = null;
+            const maxPeerLogs = 30;
+            if (session.seenPeers.size <= maxPeerLogs) {
+                this.logSession(session, `New peer connected: ${peer}`);
+            } else if (!session.peerLogLimitReached) {
+                session.peerLogLimitReached = true;
+                this.logSession(session, `Peer log limit reached (${maxPeerLogs}). Further logs suppressed.`);
             }
-        }
+        };
+        torrent.on('wire', session.wireListener);
 
-        if (lastEngineError) {
-            throw lastEngineError;
+        if (safeNumber(torrent?.numPeers) === 0) {
+            this.logSession(session, 'No peers yet, waiting for DHT bootstrap...');
+            await wait(DHT_WARMUP_MS);
+            this.logSession(session, `Peers after warm-up: ${safeNumber(torrent?.numPeers)}`);
         }
 
         session.status = 'buffering';
@@ -598,258 +697,95 @@ export class TorrentStreamService {
             throw new Error('No playable video file found in torrent');
         }
 
-        if (typeof playableFile.select === 'function') {
-            playableFile.select();
-        }
-
+        session.torrentFile = playableFile;
+        session.fileSize = safeNumber(playableFile.length, 0);
         session.fileName = playableFile.name;
-        session.message = 'Preparing adaptive stream';
-        this.logSession(session, `Selected file: ${playableFile.name} (index hint: ${preferredFileIndex ?? 'none'}, name hint: ${preferredFileName || 'none'})`);
-        this.logSession(session, 'Transcode profile: libx264 high, pix_fmt yuv420p, ABR ladder 1080/720/480');
+        session.message = 'Preparing stream';
+        this.logSession(session, `Selected file: ${playableFile.name} (${session.fileSize} bytes)`);
 
-        const input = playableFile.createReadStream({ start: 0, highWaterMark: 1024 * 1024 });
+        await this._warmLeadingPieces(session);
 
-        this.logSession(session, 'Waiting for first torrent bytes before starting transcoder');
-        try {
-            const firstChunk = await waitForFirstDataChunk(input, {
-                timeoutMs: FIRST_DATA_TIMEOUT_MS,
-                onTick: () => {
-                    const peers = safeNumber(session.torrent?.numPeers);
-                    const downloadSpeed = safeNumber(session.torrent?.downloadSpeed);
-                    this.logSession(session, `Waiting for data... peers=${peers}, dl=${Math.round((safeNumber(downloadSpeed) * 8) / 1000)} kbps`);
-                },
-            });
-            this.logSession(session, `First torrent bytes ready (${firstChunk?.length || 0} bytes)`);
-        } catch (err) {
-            session.status = 'error';
-            session.message = err?.message || 'No torrent data available';
-            throw new Error(`${session.message}. Peers: ${safeNumber(session.torrent?.numPeers)}. Tip: set ANIMEO_TORRENT_PORT to an allowed outbound port if your network is restricted.`);
+        const rawUrl = this.getStreamingUrl(sessionId);
+        this.logSession(session, 'Probing duration via ffprobe...');
+        const probedDuration = await this.probeDuration(rawUrl);
+        if (probedDuration) {
+            session.durationSeconds = probedDuration;
+            this.logSession(session, `Duration: ${probedDuration.toFixed(2)}s`);
+        } else {
+            this.logSession(session, 'ffprobe could not determine duration', 'warn');
         }
 
-        const ffmpegArgs = [
-            '-hide_banner',
-            '-loglevel',
-            'warning',
-            '-analyzeduration',
-            '200M',
-            '-probesize',
-            '200M',
-            '-fflags',
-            '+genpts+discardcorrupt',
-            '-i',
-            'pipe:0',
-            '-filter_complex',
-            '[0:v]split=3[v0][v1][v2];' +
-            '[v0]scale=1920:1080:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2[v0o];' +
-            '[v1]scale=1280:720:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2[v1o];' +
-            '[v2]scale=854:480:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2[v2o]',
-            '-map',
-            '[v0o]',
-            '-map',
-            '0:a:0?',
-            '-map',
-            '[v1o]',
-            '-map',
-            '0:a:0?',
-            '-map',
-            '[v2o]',
-            '-map',
-            '0:a:0?',
-            '-c:v',
-            'libx264',
-            '-preset',
-            'veryfast',
-            '-profile:v',
-            'high',
-            '-pix_fmt',
-            'yuv420p',
-            '-crf',
-            '21',
-            '-g',
-            '48',
-            '-keyint_min',
-            '48',
-            '-sc_threshold',
-            '0',
-            '-c:a',
-            'aac',
-            '-ac',
-            '2',
-            '-ar',
-            '48000',
-            '-b:a:0',
-            '160k',
-            '-b:a:1',
-            '128k',
-            '-b:a:2',
-            '96k',
-            '-maxrate:v:0',
-            '6200k',
-            '-bufsize:v:0',
-            '9300k',
-            '-b:v:0',
-            '5600k',
-            '-maxrate:v:1',
-            '3200k',
-            '-bufsize:v:1',
-            '4800k',
-            '-b:v:1',
-            '2800k',
-            '-maxrate:v:2',
-            '1600k',
-            '-bufsize:v:2',
-            '2400k',
-            '-b:v:2',
-            '1300k',
-            '-f',
-            'hls',
-            '-hls_time',
-            '4',
-            '-hls_list_size',
-            '12',
-            '-hls_flags',
-            'independent_segments+append_list+temp_file',
-            '-hls_segment_filename',
-            path.join(outputDir, 'v%v', 'seg_%06d.ts'),
-            '-master_pl_name',
-            'master.m3u8',
-            '-var_stream_map',
-            'v:0,a:0,name:1080p v:1,a:1,name:720p v:2,a:2,name:480p',
-            path.join(outputDir, 'v%v', 'index.m3u8'),
-        ];
+        this._touchCacheEntry(session.infoHash, session.fileSize);
 
-        fs.mkdirSync(path.join(outputDir, 'v0'), { recursive: true });
-        fs.mkdirSync(path.join(outputDir, 'v1'), { recursive: true });
-        fs.mkdirSync(path.join(outputDir, 'v2'), { recursive: true });
-
-        const ffmpegProcess = spawn(this.ffmpegPath, ffmpegArgs, {
-            windowsHide: true,
-            stdio: ['pipe', 'ignore', 'pipe'],
-        });
-
-        session.ffmpegProcess = ffmpegProcess;
-        this.logSession(session, `Spawned ffmpeg pid=${ffmpegProcess.pid || 'unknown'}`);
-
-        input.pipe(ffmpegProcess.stdin);
-
-        ffmpegProcess.stdin.on('error', (err) => {
-            const code = String(err?.code || '').toUpperCase();
-            if (code === 'EPIPE' || /write\s+eof/i.test(String(err?.message || ''))) return;
-            this.logSession(session, `ffmpeg stdin error: ${err?.message || err}`, 'warn');
-        });
-
-        input.on('error', (err) => {
-            session.status = 'error';
-            session.message = err?.message || 'Torrent file stream failed';
-            this.logSession(session, `Input stream error: ${session.message}`, 'error');
-        });
-
-        input.on('data', (chunk) => {
-            session.bytesFromTorrent += chunk?.length || 0;
-        });
-
-        ffmpegProcess.stderr.on('data', (chunk) => {
-            const line = String(chunk || '').trim();
-            if (!line) return;
-            session.message = line;
-            this.logSession(session, `ffmpeg: ${line}`, 'warn');
-
-            if (!session.durationSeconds) {
-                const match = line.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/i);
-                if (match) {
-                    const [, h, m, s] = match;
-                    session.durationSeconds = parseInt(h, 10) * 3600 + parseInt(m, 10) * 60 + parseFloat(s);
-                    this.logSession(session, `Duration parsed: ${session.durationSeconds}s`);
-                }
-            }
-        });
-
-        ffmpegProcess.on('spawn', () => {
-            session.status = 'transcoding';
-            session.message = 'Transcoding and generating HLS variants';
-            this.logSession(session, session.message);
-        });
-
-        ffmpegProcess.on('close', (code) => {
-            if (session.status === 'stopped') return;
-            session.status = code === 0 ? 'completed' : 'error';
-            session.message = code === 0 ? 'Transcoder exited' : `Transcoder exited with code ${code}`;
-            this.logSession(session, session.message, code === 0 ? 'log' : 'error');
-        });
-
-        ffmpegProcess.on('error', (err) => {
-            session.status = 'error';
-            session.message = err?.message || 'Failed to start transcoder';
-            this.logSession(session, session.message, 'error');
-        });
-
-        const masterPlaylistRelative = await this.waitForPlaylist(sessionId, HLS_PLAYLIST_TIMEOUT_MS);
-        session.masterPlaylistRelative = masterPlaylistRelative;
         session.status = 'ready';
-        session.message = 'Adaptive stream ready';
-        this.logSession(session, `Playlist ready at ${masterPlaylistRelative}`);
+        session.message = 'Raw stream ready';
+        this.logSession(session, 'Stream ready');
 
-        this.enforceCacheLimit();
+        await this._enforceCacheLimits();
 
         return {
             sessionId,
-            infoHash: parseMagnetHash(cleanMagnet),
-            masterPlaylistUrl: this.getMasterPlaylistUrl(sessionId),
+            infoHash: session.infoHash,
+            streamingUrl: rawUrl,
             status: session.status,
             fileName: playableFile.name,
-            renditions: [
-                { label: '1080p', bandwidth: 5800000, resolution: '1920x1080' },
-                { label: '720p', bandwidth: 3000000, resolution: '1280x720' },
-                { label: '480p', bandwidth: 1400000, resolution: '854x480' },
-            ],
+            durationSeconds: session.durationSeconds,
         };
     }
 
-    async waitForPlaylist(sessionId, timeoutMs) {
-        const start = Date.now();
+    getSessionStatus(sessionId) {
         const session = this.sessions.get(sessionId);
-        if (!session) {
-            throw new Error('Stream session not found while waiting for playlist');
+        if (!session) throw new Error('Stream session not found');
+
+        const torrent = session.torrent;
+        const peers = safeNumber(torrent?.numPeers);
+        const downloadSpeed = safeNumber(torrent?.downloadSpeed);
+        const uploadSpeed = safeNumber(torrent?.uploadSpeed);
+        const progressPercent = safeNumber(torrent?.downloaded) > 0 && safeNumber(session.fileSize) > 0
+            ? (safeNumber(torrent?.downloaded) / safeNumber(session.fileSize)) * 100
+            : 0;
+
+        if (session.infoHash) this._touchCacheEntry(session.infoHash, session.fileSize);
+
+        return {
+            sessionId,
+            status: session.status,
+            streamingReady: Boolean(session.torrentFile),
+            streamingUrl: this.getStreamingUrl(sessionId),
+            durationSeconds: Number.isFinite(session.durationSeconds) ? session.durationSeconds : null,
+            message: session.message || null,
+            startedAt: session.startedAt,
+            uptimeMs: Date.now() - session.startedAt,
+            sourceTitle: session.sourceTitle,
+            fileName: session.fileName,
+            metrics: {
+                peers: safeNumber(peers),
+                progress: safeNumber(progressPercent),
+                downloadSpeed: safeNumber(downloadSpeed),
+                uploadSpeed: safeNumber(uploadSpeed),
+            },
+        };
+    }
+
+    async seekSession(sessionId, targetSeconds) {
+        const session = this.sessions.get(sessionId);
+        if (!session) throw new Error('Session not found');
+
+        const safeTarget = Number.isFinite(Number(targetSeconds)) ? Math.max(0, Number(targetSeconds)) : 0;
+
+        if (session.torrentFile && typeof session.torrentFile.select === 'function' && session.durationSeconds > 0) {
+            const estimatedByteOffset = Math.floor((safeTarget / session.durationSeconds) * session.fileSize);
+            const endOffset = Math.min(session.fileSize - 1, estimatedByteOffset + (2 * 1024 * 1024));
+            this._prioritizeWindow(session, estimatedByteOffset, endOffset);
+            this.logSession(session, `Seek prioritization: target=${safeTarget.toFixed(2)}s`);
+            return {
+                seeked: true,
+                targetSeconds: safeTarget,
+                byteOffset: estimatedByteOffset,
+            };
         }
 
-        const variantCandidates = [
-            path.join(session.outputDir, 'v0', 'index.m3u8'),
-            path.join(session.outputDir, 'v1', 'index.m3u8'),
-            path.join(session.outputDir, 'v2', 'index.m3u8'),
-            path.join(session.outputDir, 'v1080p', 'index.m3u8'),
-            path.join(session.outputDir, 'v720p', 'index.m3u8'),
-            path.join(session.outputDir, 'v480p', 'index.m3u8'),
-        ];
-
-        const playlistCandidates = [
-            { relative: 'master.m3u8', absolute: path.join(session.outputDir, 'master.m3u8') },
-            { relative: path.join('v0', 'master.m3u8'), absolute: path.join(session.outputDir, 'v0', 'master.m3u8') },
-        ];
-
-        while (Date.now() - start < timeoutMs) {
-            const hasPlayableVariant = variantCandidates.some((variantPath) => fs.existsSync(variantPath) && playlistHasSegmentEntries(variantPath));
-
-            for (const candidate of playlistCandidates) {
-                if (fs.existsSync(candidate.absolute) && hasPlayableVariant) {
-                    return candidate.relative.replace(/\\/g, '/');
-                }
-            }
-
-            const syntheticMaster = buildSyntheticMasterPlaylist(session.outputDir);
-            if (syntheticMaster) {
-                this.logSession(session, 'Generated synthetic master playlist from variant indexes', 'warn');
-                return 'master.m3u8';
-            }
-
-            if (session.status === 'error' || session.status === 'stopped') {
-                throw new Error(`Stream failed before playlist was ready: ${session.message || session.status}`);
-            }
-
-            await new Promise((resolve) => setTimeout(resolve, 350));
-        }
-
-        const artifacts = collectHlsArtifacts(session.outputDir);
-        throw new Error(`Timed out waiting for HLS playlist to be generated (status=${session.status}, ffmpegPid=${session.ffmpegProcess?.pid || 'none'}, bytes=${session.bytesFromTorrent}, artifacts=${artifacts.join(', ') || 'none'})`);
+        return { seeked: false, targetSeconds: safeTarget, reason: 'duration_unavailable' };
     }
 
     async stopSession(sessionId) {
@@ -858,50 +794,50 @@ export class TorrentStreamService {
 
         session.status = 'stopped';
 
-        try {
-            if (session.ffmpegProcess && !session.ffmpegProcess.killed) {
-                session.ffmpegProcess.kill('SIGTERM');
-            }
-        } catch {
-            // No-op.
+        if (session.torrent && session.wireListener) {
+            try { session.torrent.removeListener('wire', session.wireListener); } catch { /* ignore */ }
         }
 
-        try {
-            if (session.torrent) {
-                await new Promise((resolve) => session.torrent.destroy(() => resolve()));
-            }
-        } catch {
-            // No-op.
+        if (session.torrentFile && session.dynamicWindow) {
+            fileDeselect(session.torrentFile, session.dynamicWindow.start, session.dynamicWindow.end);
         }
 
-        try {
-            if (session.client) {
-                await new Promise((resolve) => session.client.destroy(() => resolve()));
-            }
-        } catch {
-            // No-op.
+        if (session.infoHash) {
+            const poolEntry = this.torrentPool.get(session.infoHash);
+            if (poolEntry) poolEntry.lastAccess = Date.now();
+            this._touchCacheEntry(session.infoHash, session.fileSize);
         }
 
         this.sessions.delete(sessionId);
-
+        await this._enforceCacheLimits();
         return { sessionId, stopped: true };
     }
 
-    enforceCacheLimit() {
-        const sessionDirs = listSessionDirs(this.cacheRoot);
-        let total = sessionDirs.reduce((sum, current) => sum + dirSizeBytes(current), 0);
-
-        for (const sessionDir of sessionDirs) {
-            if (total <= this.maxCacheBytes) break;
-            total -= dirSizeBytes(sessionDir);
-            rmrf(sessionDir);
-        }
-    }
-
     async dispose() {
-        const allSessionIds = Array.from(this.sessions.keys());
-        for (const id of allSessionIds) {
+        if (this._idleSweepTimer) {
+            clearInterval(this._idleSweepTimer);
+            this._idleSweepTimer = null;
+        }
+
+        for (const id of Array.from(this.sessions.keys())) {
             await this.stopSession(id);
+        }
+
+        for (const [infoHash, entry] of this.torrentPool.entries()) {
+            await new Promise((resolve) => {
+                try {
+                    this.client.remove(entry.torrent, { destroyStore: false }, () => resolve());
+                } catch {
+                    resolve();
+                }
+            });
+            this.torrentPool.delete(infoHash);
+        }
+
+        if (this.client) {
+            await new Promise((resolve) => {
+                try { this.client.destroy(() => resolve()); } catch { resolve(); }
+            });
         }
 
         if (this.server) {

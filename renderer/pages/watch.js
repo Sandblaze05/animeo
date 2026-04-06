@@ -97,10 +97,9 @@ export default function WatchPage() {
   const [playbackState, setPlaybackState] = useState({
     currentTime: 0,
     duration: 0,
-    bufferedEnd: 0,
     isLive: true,
   });
-  const [liveElapsedSeconds, setLiveElapsedSeconds] = useState(0);
+  const [isSeeking, setIsSeeking] = useState(false);
 
   const fetchingRef = useRef(new Set());
   const metaRef = useRef(meta);
@@ -108,7 +107,6 @@ export default function WatchPage() {
   const episodeListRef = useRef(null);
   const streamSessionRef = useRef(null);
   const statusPollRef = useRef(null);
-  const hlsRef = useRef(null);
   const videoRef = useRef(null);
 
   /* ─── 1. RESOLVE FRANCHISE ─────────────────────────────────── */
@@ -358,11 +356,6 @@ export default function WatchPage() {
       statusPollRef.current = null;
     }
 
-    if (hlsRef.current) {
-      hlsRef.current.destroy();
-      hlsRef.current = null;
-    }
-
     if (videoRef.current) {
       videoRef.current.pause();
       videoRef.current.removeAttribute('src');
@@ -371,7 +364,6 @@ export default function WatchPage() {
 
     setIsPlaying(false);
     setPlaybackState({ currentTime: 0, duration: 0, bufferedEnd: 0, isLive: true });
-    setLiveElapsedSeconds(0);
   }, []);
 
   const stopActiveSession = useCallback(async () => {
@@ -390,43 +382,13 @@ export default function WatchPage() {
     }
   }, [teardownPlayer]);
 
-  const attachPlayback = useCallback(async (playlistUrl) => {
-    if (!videoRef.current || !playlistUrl) return;
+  const attachPlayback = useCallback(async (streamUrl) => {
+    if (!videoRef.current || !streamUrl) return;
     const video = videoRef.current;
 
     setPlayerError(null);
-
-    if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = playlistUrl;
-      video.preload = 'auto';
-      return;
-    }
-
-    const hlsModule = await import('hls.js');
-    const Hls = hlsModule?.default || hlsModule;
-
-    if (!Hls?.isSupported?.()) {
-      throw new Error('Your runtime does not support HLS playback');
-    }
-
-    const hls = new Hls({
-      enableWorker: true,
-      lowLatencyMode: false,
-      capLevelToPlayerSize: true,
-      maxBufferLength: 30,
-    });
-
-    hls.attachMedia(video);
-    hls.on(Hls.Events.MEDIA_ATTACHED, () => {
-      hls.loadSource(playlistUrl);
-    });
-    hls.on(Hls.Events.ERROR, (event, data) => {
-      if (data?.fatal) {
-        setPlayerError(data?.details || 'Fatal playback error');
-      }
-    });
-
-    hlsRef.current = hls;
+    video.src = streamUrl;
+    video.preload = 'auto';
   }, []);
 
   const beginStatusPolling = useCallback((sessionId) => {
@@ -484,11 +446,11 @@ export default function WatchPage() {
     let cancelled = false;
 
     const startPlayback = async () => {
-      const playlistUrl = streamSession?.masterPlaylistUrl;
-      if (!playlistUrl) return;
+      const streamUrl = streamSession?.streamingUrl;
+      if (!streamUrl) return;
 
       try {
-        await attachPlayback(playlistUrl);
+        await attachPlayback(streamUrl);
         if (cancelled || !videoRef.current) return;
 
         try {
@@ -515,7 +477,7 @@ export default function WatchPage() {
     return () => {
       cancelled = true;
     };
-  }, [attachPlayback, streamSession?.masterPlaylistUrl]);
+  }, [attachPlayback, streamSession?.streamingUrl]);
 
   const togglePlayPause = useCallback(async () => {
     if (!videoRef.current) return;
@@ -549,8 +511,6 @@ export default function WatchPage() {
         bufferedEnd: Number.isFinite(bufferedEnd) ? bufferedEnd : 0,
         isLive: !isFiniteDuration,
       });
-
-      setLiveElapsedSeconds((prev) => (currentTime > prev ? currentTime : prev));
     };
 
     updatePlaybackState();
@@ -574,22 +534,45 @@ export default function WatchPage() {
     };
   }, [streamSession?.sessionId]);
 
-  const handleSeek = useCallback((event) => {
+  const handleSeek = useCallback(async (event) => {
     const video = videoRef.current;
     if (!video) return;
 
-    if (streamSessionRef.current?.sessionId) {
-      const latestStatus = streamSessionStatus?.status;
-      if (latestStatus && latestStatus !== 'completed') return;
-    }
+    // Prefer server-reported duration (available before the video element knows it)
+    const knownDuration = Number.isFinite(Number(streamSessionStatus?.durationSeconds))
+      ? Number(streamSessionStatus.durationSeconds)
+      : Number(video.duration);
 
-    const duration = Number(video.duration);
-    if (!Number.isFinite(duration) || duration <= 0) return;
+    if (!knownDuration || knownDuration <= 0) return;
 
     const rect = event.currentTarget.getBoundingClientRect();
     const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-    video.currentTime = ratio * duration;
-  }, [streamSessionStatus?.status]);
+    const targetTime = ratio * knownDuration;
+
+    const streamUrl = streamSession?.streamingUrl;
+    if (!streamSession?.sessionId || !streamUrl) {
+      // No active torrent session — plain HTML5 seek is enough
+      video.currentTime = targetTime;
+      return;
+    }
+
+    // Best effort: notify backend to prioritize pieces near the target.
+    setIsSeeking(true);
+    try {
+      const urlObj = new URL(streamUrl);
+      const seekUrl = `${urlObj.protocol}//${urlObj.host}/seek/${streamSession.sessionId}?t=${Math.floor(targetTime)}`;
+      await fetch(seekUrl, { method: 'POST' });
+      video.currentTime = targetTime;
+
+      if (video.paused) {
+        try { await video.play(); setIsPlaying(true); } catch { /* autoplay policy */ }
+      }
+    } catch (err) {
+      console.error('[watch] Seek failed:', err);
+    } finally {
+      setIsSeeking(false);
+    }
+  }, [streamSession, streamSessionStatus?.durationSeconds]);
 
   useEffect(() => {
     return () => {
@@ -631,7 +614,7 @@ export default function WatchPage() {
     ? Number(streamSessionStatus.durationSeconds)
     : null;
   const durationSeconds = playbackState.duration;
-  const displayCurrentTime = isLivePlayback ? liveElapsedSeconds : playbackState.currentTime;
+  const displayCurrentTime = playbackState.currentTime;
   const displayDurationSeconds = isLivePlayback
     ? (expectedDurationSeconds || 0)
     : durationSeconds;
@@ -721,7 +704,7 @@ export default function WatchPage() {
                 onMouseEnter={() => setPlayerHovered(true)}
                 onMouseLeave={() => setPlayerHovered(false)}
               >
-                {streamSession?.masterPlaylistUrl ? (
+                {streamSession?.streamingUrl ? (
                   <video
                     ref={videoRef}
                     className="w-full h-full object-contain bg-black"
@@ -736,11 +719,11 @@ export default function WatchPage() {
                   </div>
                 )}
 
-                {streamBooting && (
+                {(streamBooting || isSeeking) && (
                   <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px] flex items-center justify-center z-20">
                     <div className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-white/10 bg-black/60 text-white/80 text-[0.75rem] font-bold uppercase tracking-wider">
                       <Loader2 size={14} className="animate-spin" />
-                      Initializing Stream
+                      {isSeeking ? 'Seeking Stream' : 'Initializing Stream'}
                     </div>
                   </div>
                 )}
@@ -802,7 +785,7 @@ export default function WatchPage() {
                       </button>
                       <button
                         onClick={togglePlayPause}
-                        disabled={!streamSession?.masterPlaylistUrl}
+                        disabled={!streamSession?.streamingUrl}
                         className="bg-transparent border-none text-white cursor-pointer p-1.5 flex items-center justify-center rounded-lg hover:bg-white/10 hover:scale-110 transition-all duration-200 ease-in-out disabled:opacity-30 disabled:cursor-not-allowed"
                       >
                         {isPlaying ? <Pause size={28} fill="currentColor" /> : <Play size={28} fill="currentColor" />}
@@ -824,8 +807,8 @@ export default function WatchPage() {
                       <button
                         onClick={() => setShowStats(!showStats)}
                         className={`text-[0.65rem] uppercase tracking-wider font-bold px-3 py-1.5 rounded-lg border cursor-pointer transition-all duration-300 ease-in-out hover:-translate-y-px ${showStats
-                            ? 'border-[#ff2d9b]/50 bg-[#ff2d9b]/15 text-[#ff71bd]'
-                            : 'border-white/10 bg-white/5 text-white/50'
+                          ? 'border-[#ff2d9b]/50 bg-[#ff2d9b]/15 text-[#ff71bd]'
+                          : 'border-white/10 bg-white/5 text-white/50'
                           }`}
                       >
                         Stats

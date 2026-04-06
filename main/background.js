@@ -1401,7 +1401,10 @@ async function setupAppBackend(rootPath) {
     try {
       torrentStreamService = new TorrentStreamService({
         cacheRoot: path.join(dataDir, 'stream-cache'),
-        maxCacheBytes: 8 * 1024 * 1024 * 1024,
+        maxCacheBytes: 30 * 1024 * 1024 * 1024,
+        maxCacheTorrents: 25,
+        cacheMaxAgeMs: 3 * 24 * 60 * 60 * 1000,
+        idleTimeoutMs: 60 * 60 * 1000,
       });
     } catch (err) {
       torrentStreamServiceInitError = err?.message || String(err);
