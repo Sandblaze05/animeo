@@ -21,6 +21,7 @@ const TORRENT_PORT = Number.isFinite(Number(process.env.ANIMEO_TORRENT_PORT))
     : 6881;
 
 const WARM_LEADING_BYTES = 5 * 1024 * 1024;
+const WARM_TRAILING_BYTES = 5 * 1024 * 1024;
 const KEEP_HEAD_BYTES = 100 * 1024 * 1024;
 const SEEK_BEHIND_BYTES = 8 * 1024 * 1024;
 const SEEK_AHEAD_BYTES = 60 * 1024 * 1024;
@@ -445,6 +446,7 @@ export class TorrentStreamService {
                 return;
             }
 
+
             res.writeHead(404, { 'Access-Control-Allow-Origin': '*' });
             res.end('Not found');
         });
@@ -464,11 +466,14 @@ export class TorrentStreamService {
         if (!this.ffprobePath) return null;
         return new Promise((resolve) => {
             const args = [
-                '-v', 'quiet',
+                '-v', 'error',
                 '-print_format', 'json',
                 '-show_format',
-                '-analyzeduration', '10M',
-                '-probesize', '10M',
+                '-show_streams',
+                '-analyzeduration', '100M',
+                '-probesize', '100M',
+                '-rw_timeout', '15000000',
+                '-seekable', '1',
                 rawUrl,
             ];
             const proc = spawn(this.ffprobePath, args, {
@@ -482,7 +487,7 @@ export class TorrentStreamService {
             const timeoutId = setTimeout(() => {
                 try { proc.kill(); } catch { /* ignore */ }
                 resolve(null);
-            }, 30000);
+            }, 60000);
 
             proc.on('close', () => {
                 clearTimeout(timeoutId);
@@ -499,6 +504,80 @@ export class TorrentStreamService {
                 clearTimeout(timeoutId);
                 resolve(null);
             });
+        });
+    }
+
+    async probeFromTorrentFile(file) {
+        return new Promise((resolve) => {
+            if (!this.ffprobePath) return resolve(null);
+
+            const proc = spawn(this.ffprobePath, [
+                '-v', 'error',
+                '-print_format', 'json',
+                '-show_format',
+                '-show_streams',
+                '-'
+            ], {
+                windowsHide: true,
+                stdio: ['pipe', 'pipe', 'ignore'],
+            });
+
+            const maxBytes = Math.min(Math.max(0, Number(file.length) || 0), 50 * 1024 * 1024);
+            const stream = file.createReadStream({ start: 0, end: Math.max(0, maxBytes - 1) });
+
+            let output = '';
+            let settled = false;
+
+            const tidy = (result) => {
+                if (settled) return;
+                settled = true;
+                try { stream.unpipe(proc.stdin); } catch { /* ignore */ }
+                try { proc.stdin.end(); } catch { /* ignore */ }
+                try { stream.destroy(); } catch { /* ignore */ }
+                resolve(result);
+            };
+
+            const timeout = setTimeout(() => {
+                try { proc.kill(); } catch { /* ignore */ }
+                tidy(null);
+            }, 30000);
+
+            proc.stdout.on('data', (d) => { output += d.toString(); });
+
+            proc.on('error', (err) => {
+                clearTimeout(timeout);
+                tidy(null);
+            });
+
+            proc.on('close', () => {
+                clearTimeout(timeout);
+                try {
+                    const json = JSON.parse(output || '{}');
+                    tidy(Object.keys(json).length ? json : null);
+                } catch {
+                    tidy(null);
+                }
+            });
+
+            // Protect against write errors when ffprobe exits early
+            proc.stdin.on('error', () => { /* ignore write errors */ });
+
+            stream.on('error', () => {
+                clearTimeout(timeout);
+                tidy(null);
+            });
+
+            stream.on('end', () => {
+                try { proc.stdin.end(); } catch { /* ignore */ }
+            });
+
+            // Start piping; pipe errors on stream will be handled above
+            try {
+                stream.pipe(proc.stdin);
+            } catch (e) {
+                clearTimeout(timeout);
+                tidy(null);
+            }
         });
     }
 
@@ -569,6 +648,37 @@ export class TorrentStreamService {
                 resolve();
             });
         });
+    }
+
+    async _warmTrailingPieces(session, warmBytes = WARM_TRAILING_BYTES) {
+        const file = session.torrentFile;
+        if (!file || !session.fileSize) return;
+
+        const start = Math.max(0, session.fileSize - warmBytes);
+        const end = session.fileSize - 1;
+
+        this._prioritizeWindow(session, start, end);
+
+        this.logSession(session, `Warming trailing bytes ${Math.round(warmBytes / 1024 / 1024)}MB...`);
+
+        return new Promise((resolve) => {
+            const stream = file.createReadStream({ start, end });
+
+            const timeout = setTimeout(() => {
+                stream.destroy();
+                resolve();
+            }, 15000);
+
+            stream.on('end', () => {
+                clearTimeout(timeout);
+                resolve();
+            });
+
+            stream.on('error', () => {
+                clearTimeout(timeout);
+                resolve();
+            });
+        })
     }
 
     async _getOrCreateTorrent(cleanMagnet, infoHashHint, trackers, sourceTitle) {
@@ -706,13 +816,34 @@ export class TorrentStreamService {
         await this._warmLeadingPieces(session);
 
         const rawUrl = this.getStreamingUrl(sessionId);
-        this.logSession(session, 'Probing duration via ffprobe...');
-        const probedDuration = await this.probeDuration(rawUrl);
+        let probedDuration = null;
+
+        if (this.ffprobePath) {
+            this.logSession(session, 'Probing duration from torrent file via ffprobe stdin...');
+            try {
+                const json = await this.probeFromTorrentFile(playableFile);
+                const dur = parseFloat(json?.format?.duration);
+                if (Number.isFinite(dur) && dur > 0) probedDuration = dur;
+            } catch (e) {
+                this.logSession(session, `probeFromTorrentFile error: ${e?.message || String(e)}`, 'warn');
+            }
+        }
+
+        if (!probedDuration) {
+            this.logSession(session, 'Probing duration via streaming URL as fallback...');
+            try {
+                const d = await this.probeDuration(rawUrl);
+                if (d) probedDuration = d;
+            } catch (e) {
+                this.logSession(session, `probeDuration error: ${e?.message || String(e)}`, 'warn');
+            }
+        }
+
         if (probedDuration) {
             session.durationSeconds = probedDuration;
             this.logSession(session, `Duration: ${probedDuration.toFixed(2)}s`);
         } else {
-            this.logSession(session, 'ffprobe could not determine duration', 'warn');
+            this.logSession(session, 'Could not determine duration', 'warn');
         }
 
         this._touchCacheEntry(session.infoHash, session.fileSize);

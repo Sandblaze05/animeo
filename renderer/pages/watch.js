@@ -13,7 +13,8 @@ import {
   Play, Pause, Volume2, Maximize, BarChart3,
   ChevronRight, ExternalLink, Download, Magnet,
   Tv, List, Clock, Calendar, Signal, Loader2,
-  SkipForward, SkipBack, ChevronDown, Square
+  SkipForward, SkipBack, ChevronDown, Activity,
+  Fullscreen, Minimize2
 } from 'lucide-react';
 
 const WATCH_EPISODES_COUNTS_ONLY = false;
@@ -94,6 +95,7 @@ export default function WatchPage() {
   const [streamBooting, setStreamBooting] = useState(false);
   const [playerError, setPlayerError] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [playbackState, setPlaybackState] = useState({
     currentTime: 0,
     duration: 0,
@@ -105,9 +107,23 @@ export default function WatchPage() {
   const metaRef = useRef(meta);
   useEffect(() => { metaRef.current = meta; }, [meta]);
   const episodeListRef = useRef(null);
+  const playerContainerRef = useRef(null);
   const streamSessionRef = useRef(null);
   const statusPollRef = useRef(null);
   const videoRef = useRef(null);
+
+  useEffect(() => {
+    const syncFullscreenState = () => {
+      setIsFullscreen(document.fullscreenElement === playerContainerRef.current);
+    };
+
+    syncFullscreenState();
+    document.addEventListener('fullscreenchange', syncFullscreenState);
+
+    return () => {
+      document.removeEventListener('fullscreenchange', syncFullscreenState);
+    };
+  }, []);
 
   /* ─── 1. RESOLVE FRANCHISE ─────────────────────────────────── */
   useEffect(() => {
@@ -389,6 +405,29 @@ export default function WatchPage() {
     setPlayerError(null);
     video.src = streamUrl;
     video.preload = 'auto';
+  }, []);
+
+  const toggleFullscreen = useCallback(async () => {
+    const playerContainer = playerContainerRef.current;
+    if (!playerContainer) return;
+
+    try {
+      if (document.fullscreenElement === playerContainer) {
+        await document.exitFullscreen();
+        return;
+      }
+
+      if (playerContainer.requestFullscreen) {
+        await playerContainer.requestFullscreen();
+        return;
+      }
+
+      if (videoRef.current?.requestFullscreen) {
+        await videoRef.current.requestFullscreen();
+      }
+    } catch (err) {
+      console.warn('[watch] Failed to toggle fullscreen:', err?.message || err);
+    }
   }, []);
 
   const beginStatusPolling = useCallback((sessionId) => {
@@ -700,10 +739,12 @@ export default function WatchPage() {
             <div className="animate-in fade-in slide-in-from-bottom-2 duration-600 delay-100">
               {/* Video Player */}
               <div
-                className="group watch-player relative w-full rounded-3xl overflow-hidden bg-black aspect-video border border-white/8 shadow-[0_25px_50px_-12px_rgba(0,0,0,0.7),0_0_80px_-20px_rgba(230,0,118,0.15)] transition-all duration-400 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
+                ref={playerContainerRef}
+                className="group relative w-full aspect-video rounded-3xl overflow-hidden bg-black border border-white/10 shadow-2xl transition-all duration-500"
                 onMouseEnter={() => setPlayerHovered(true)}
                 onMouseLeave={() => setPlayerHovered(false)}
               >
+                {/* Video Element */}
                 {streamSession?.streamingUrl ? (
                   <video
                     ref={videoRef}
@@ -715,56 +756,58 @@ export default function WatchPage() {
                   />
                 ) : (
                   <div className="absolute inset-0 flex items-center justify-center bg-black">
-                    <span className="text-white/10 font-(family-name:--font-geist-mono) text-[0.75rem] tracking-[0.5em] uppercase select-none">Awaiting Signal</span>
+                    <span className="text-white/30 font-mono text-xs tracking-[0.3em] uppercase select-none">
+                      Awaiting Signal
+                    </span>
                   </div>
                 )}
 
+                {/* Loading State */}
                 {(streamBooting || isSeeking) && (
-                  <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px] flex items-center justify-center z-20">
-                    <div className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-white/10 bg-black/60 text-white/80 text-[0.75rem] font-bold uppercase tracking-wider">
+                  <div className="absolute inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-20">
+                    <div className="flex items-center gap-3 px-4 py-2 rounded-lg bg-black/50 text-white/90 text-xs tracking-widest uppercase">
                       <Loader2 size={14} className="animate-spin" />
-                      {isSeeking ? 'Seeking Stream' : 'Initializing Stream'}
+                      {isSeeking ? 'Seeking' : 'Initializing'}
                     </div>
                   </div>
                 )}
 
+                {/* Error Overlay */}
                 {playerError && (
-                  <div className="absolute top-5 right-5 z-30 text-[0.7rem] bg-red-500/20 border border-red-500/30 text-red-200 px-3 py-2 rounded-xl max-w-64">
+                  <div className="absolute top-4 right-4 z-30 text-xs bg-red-500/10 border border-red-500/20 text-red-300 px-4 py-2 rounded-lg backdrop-blur-md max-w-xs">
                     {playerError}
                   </div>
                 )}
 
-                {/* Stats overlay */}
+                {/* Minimal Stats Overlay */}
                 {showStats && (
-                  <div className="absolute top-5 left-5 bg-[#04000a]/85 backdrop-blur-[20px] border border-white/10 p-4 rounded-2xl shadow-[0_15px_35px_rgba(0,0,0,0.4)] text-[0.75rem] font-(family-name:--font-geist-mono) text-white/50 z-40 w-65 animate-in zoom-in-95 duration-300">
-                    <div className="text-[#ff71bd] font-extrabold mb-3 text-[0.7rem] uppercase tracking-[0.15em]">
-                      Stream Statistics
+                  <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-xl border border-white/10 p-4 rounded-xl text-xs font-mono text-white/60 z-40 w-60 animate-in fade-in duration-200">
+                    <div className="text-white/90 font-semibold mb-3 tracking-wider">
+                      STATISTICS
                     </div>
-                    <div className="flex flex-col gap-1.5">
+                    <div className="flex flex-col gap-2">
                       <div className="flex justify-between">
-                        <span>Resolution</span>
-                        <span className="text-white">{streamResolution}</span>
+                        <span>Res</span><span className="text-white">{streamResolution}</span>
                       </div>
                       <div className="flex justify-between">
-                        <span>Bitrate</span>
-                        <span className="text-white">{streamBitrate}</span>
+                        <span>Bitrate</span><span className="text-white">{streamBitrate}</span>
                       </div>
                       <div className="flex justify-between">
-                        <span>Peers</span>
-                        <span className="text-white">{streamPeers}</span>
+                        <span>Peers</span><span className="text-white">{streamPeers}</span>
                       </div>
                       <div className="flex justify-between">
-                        <span>Status</span>
-                        <span className="text-white uppercase">{streamHealth}</span>
+                        <span>Status</span><span className="text-white">{streamHealth}</span>
                       </div>
                     </div>
                   </div>
                 )}
 
-                {/* Controls */}
-                <div className="controls-overlay absolute bottom-0 inset-x-0 bg-linear-to-t from-black/90 via-black/40 to-transparent pt-20 px-6 pb-6 opacity-0 group-hover:opacity-100 transition-opacity duration-400 ease-in-out">
+                {/* Minimalist Controls */}
+                <div className="absolute bottom-0 inset-x-0 bg-linear-to-t from-black/80 via-black/20 to-transparent pt-12 px-6 pb-6 opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-30">
+
+                  {/* Sleek Seek Bar */}
                   <div
-                    className="seek-bar w-full h-1 bg-white/15 rounded-full mb-4 cursor-pointer relative transition-all duration-200 group-hover:h-1.5"
+                    className="group/seek w-full h-1 bg-white/20 rounded-full mb-5 cursor-pointer relative flex items-center"
                     onClick={handleSeek}
                     role="slider"
                     aria-label="Seek"
@@ -772,53 +815,50 @@ export default function WatchPage() {
                     aria-valuemax={displayDurationSeconds || 0}
                     aria-valuenow={displayCurrentTime}
                   >
-                    <div className="absolute inset-y-0 left-0 bg-white/10 rounded-full -z-10" style={{ width: `${bufferedPercent}%` }} />
-                    <div className="absolute inset-y-0 left-0 bg-linear-to-r from-[#ff2d9b] to-[#ff71bd] rounded-full shadow-[0_0_15px_rgba(255,45,155,0.4)]" style={{ width: `${progressPercent}%` }}>
-                      <div className="seek-thumb absolute -right-1.5 top-1/2 -translate-y-1/2 scale-0 group-hover:scale-100 w-3.5 h-3.5 bg-white rounded-full shadow-[0_0_15px_rgba(255,45,155,0.8)] transition-transform duration-200 ease-[cubic-bezier(0.175,0.885,0.32,1.275)]" />
+                    <div className="absolute inset-y-0 left-0 bg-white/30 rounded-full" style={{ width: `${bufferedPercent}%` }} />
+                    <div className="absolute inset-y-0 left-0 bg-white rounded-full transition-all" style={{ width: `${progressPercent}%` }}>
+                      <div className="absolute -right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full opacity-0 group-hover/seek:opacity-100 transition-opacity duration-200 shadow-sm" />
                     </div>
                   </div>
 
                   <div className="flex items-center justify-between">
+                    {/* Left Controls: Play, Volume, Time */}
                     <div className="flex items-center gap-5">
-                      <button className="bg-transparent border-none text-white/85 cursor-pointer p-1.5 flex items-center justify-center rounded-lg hover:text-white hover:bg-white/10 hover:scale-110 transition-all duration-200 ease-in-out">
-                        <SkipBack size={20} fill="currentColor" />
-                      </button>
                       <button
                         onClick={togglePlayPause}
                         disabled={!streamSession?.streamingUrl}
-                        className="bg-transparent border-none text-white cursor-pointer p-1.5 flex items-center justify-center rounded-lg hover:bg-white/10 hover:scale-110 transition-all duration-200 ease-in-out disabled:opacity-30 disabled:cursor-not-allowed"
+                        className="text-white hover:text-white/80 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                       >
-                        {isPlaying ? <Pause size={28} fill="currentColor" /> : <Play size={28} fill="currentColor" />}
+                        {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
                       </button>
-                      <button className="bg-transparent border-none text-white/85 cursor-pointer p-1.5 flex items-center justify-center rounded-lg hover:text-white hover:bg-white/10 hover:scale-110 transition-all duration-200 ease-in-out">
-                        <SkipForward size={20} fill="currentColor" />
+
+                      <button className="text-white/70 hover:text-white transition-colors">
+                        <Volume2 size={18} />
                       </button>
-                      <div className="w-px h-4 bg-white/10 mx-2" />
-                      <button className="bg-transparent border-none text-white/85 cursor-pointer p-1.5 flex items-center justify-center rounded-lg hover:text-white hover:bg-white/10 hover:scale-110 transition-all duration-200 ease-in-out">
-                        <Volume2 size={20} />
-                      </button>
-                      <span className="text-[0.75rem] font-(family-name:--font-geist-mono) text-white/60 tracking-wider font-medium">
+
+                      <span className="text-xs font-mono text-white/50 tracking-wide mt-0.5">
                         {isLivePlayback
-                          ? `${formatTime(displayCurrentTime)} / ${expectedDurationSeconds ? `~${formatTime(expectedDurationSeconds)}` : 'LIVE'}`
+                          ? `${formatTime(displayCurrentTime)} / ${expectedDurationSeconds ? formatTime(expectedDurationSeconds) : 'LIVE'}`
                           : `${formatTime(playbackState.currentTime)} / ${formatTime(durationSeconds)}`}
                       </span>
                     </div>
-                    <div className="flex items-center gap-4">
+
+                    {/* Right Controls: Stats, Fullscreen */}
+                    <div className="flex items-center gap-5">
                       <button
                         onClick={() => setShowStats(!showStats)}
-                        className={`text-[0.65rem] uppercase tracking-wider font-bold px-3 py-1.5 rounded-lg border cursor-pointer transition-all duration-300 ease-in-out hover:-translate-y-px ${showStats
-                          ? 'border-[#ff2d9b]/50 bg-[#ff2d9b]/15 text-[#ff71bd]'
-                          : 'border-white/10 bg-white/5 text-white/50'
-                          }`}
+                        className={`transition-colors ${showStats ? 'text-white' : 'text-white/50 hover:text-white'}`}
+                        title="Stream Stats"
                       >
-                        Stats
+                        <Activity size={18} />
                       </button>
+
                       <button
-                        onClick={stopActiveSession}
-                        disabled={!streamSession?.sessionId}
-                        className="bg-transparent border-none text-white/85 cursor-pointer p-1.5 flex items-center justify-center rounded-lg hover:text-white hover:bg-white/10 hover:scale-110 transition-all duration-200 ease-in-out disabled:opacity-30 disabled:cursor-not-allowed"
+                        onClick={toggleFullscreen}
+                        className="text-white/70 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                        title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
                       >
-                        <Square size={18} />
+                        {isFullscreen ? <Minimize2 size={18} /> : <Fullscreen size={18} />}
                       </button>
                     </div>
                   </div>
