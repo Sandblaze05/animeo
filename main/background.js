@@ -358,16 +358,15 @@ const normalizeSearchResults = (results) => {
   return deduped;
 };
 
-const searchMAL = async (query) => {
+const searchMAL = async (query, sfw = true) => {
   const cleanQuery = query
     .replace(/season\s*\d+/gi, '')
     .replace(/part\s*\d+/gi, '')
     .replace(/[\[\]]/g, '')
     .trim();
 
-  const res = await fetch(
-    `https://api.jikan.moe/v4/anime?q=${encodeURIComponent(cleanQuery)}&limit=10&order_by=popularity&sort=asc`
-  );
+  const url = `https://api.jikan.moe/v4/anime?q=${encodeURIComponent(cleanQuery)}&limit=10&order_by=popularity&sort=asc${sfw ? '&sfw=true' : '&sfw=false'}`;
+  const res = await fetch(url);
   if (!res.ok) return [];
   const json = await res.json();
   return json.data ?? [];
@@ -505,6 +504,9 @@ const fetchAnimeMeta = async (id) => {
 
 const mergeSeasonData = (season, jikanMeta) => {
   const anilist = season.anilistData;
+  const rating = jikanMeta?.rating || '';
+  const isAdult = anilist?.isAdult === true || rating.toLowerCase().includes('hentai') || rating.toLowerCase().includes('rx');
+
   return {
     malId: season.malId,
     title: season.title,
@@ -525,6 +527,7 @@ const mergeSeasonData = (season, jikanMeta) => {
     genres: anilist?.genres ?? jikanMeta?.genres?.map(g => g.name) ?? [],
     studios: anilist?.studios?.nodes?.map(n => n.name) ?? jikanMeta?.studios?.map(s => s.name) ?? [],
     rating: jikanMeta?.rating,
+    isAdult: isAdult,
     source: jikanMeta?.source,
     aired: jikanMeta?.aired?.from,
     characters: anilist?.characters?.edges ?? [],
@@ -914,7 +917,7 @@ function toSeasonLabel(seasonNumber, partNumber) {
   return `Season ${seasonNumber}`;
 }
 
-async function resolveSearchContext(title, seasonInput, preferredMalId) {
+async function resolveSearchContext(title, seasonInput, preferredMalId, isAdult = false) {
   const parsed = extractSeasonPart(seasonInput);
   const cleanTitle = sanitizeAnimeQueryTitle(title);
   const finalSeasonHint = hasFinalSeasonHint(title, seasonInput);
@@ -931,7 +934,7 @@ async function resolveSearchContext(title, seasonInput, preferredMalId) {
         return { cleanTitle, seasonNumber, partNumber, inferred: false };
       }
 
-      const searchResults = await searchMAL(cleanTitle || String(title || ''));
+      const searchResults = await searchMAL(cleanTitle || String(title || ''), !isAdult);
       if (!searchResults?.length) {
         return { cleanTitle, seasonNumber, partNumber, inferred: false };
       }
@@ -1007,7 +1010,7 @@ function hasPartMismatch(entryTitle, expectedPart) {
   return false;
 }
 
-function scoreAnimeSourceMatch({ title, entryTitle, seasonNumber, partNumber, episode }) {
+function scoreAnimeSourceMatch({ title, entryTitle, seasonNumber, partNumber, episode, isAdult = false }) {
   const similarity = titleSimilarity(title, entryTitle);
   const score = Math.round(similarity * 100);
 
@@ -1015,15 +1018,18 @@ function scoreAnimeSourceMatch({ title, entryTitle, seasonNumber, partNumber, ep
     return { score: -1, include: false };
   }
 
-  if (hasSeasonMismatch(entryTitle, seasonNumber)) {
+  // Adult content often doesn't follow strict season numbering in filenames
+  if (!isAdult && hasSeasonMismatch(entryTitle, seasonNumber)) {
     return { score: -1, include: false };
   }
 
-  if (hasPartMismatch(entryTitle, partNumber)) {
+  if (!isAdult && hasPartMismatch(entryTitle, partNumber)) {
     return { score: -1, include: false };
   }
 
-  return { score, include: score >= 25 };
+  // Loosen score requirement for adult content as titles can vary wildly with tags
+  const minScore = isAdult ? 15 : 25;
+  return { score, include: score >= minScore };
 }
 
 function generateSphinxQuery(title, season, episode, options = {}) {
@@ -1133,7 +1139,7 @@ function setupAnimeHandlers() {
 
   ipcMain.handle('anime:search', async (event, args) => {
     try {
-      const { title, season, episode, malId, options: rawOptions = {} } = args || {};
+      const { title, season, episode, malId, options: rawOptions = {}, isAdult = false } = args || {};
       const options = {
         strict: rawOptions.strict !== undefined ? rawOptions.strict : true,
         includeLooseNumeric: !!rawOptions.includeLooseNumeric,
@@ -1146,7 +1152,7 @@ function setupAnimeHandlers() {
             : undefined
       };
 
-      const context = await resolveSearchContext(title, season, malId);
+      const context = await resolveSearchContext(title, season, malId, isAdult);
       const cleanTitle = context.cleanTitle || String(title || '').trim();
       const effectiveSeasonNumber = context.seasonNumber;
       const effectivePartNumber = context.partNumber;
@@ -1160,7 +1166,8 @@ function setupAnimeHandlers() {
         malId: Number.isFinite(effectiveMalId) ? effectiveMalId : null,
         kitsuId: kitsuContext.kitsuId,
         episode: episodeNumber,
-        options
+        options,
+        isAdult // Include in cache key
       });
       const now = Date.now();
       const cached = searchResultCache.get(cacheKey);
@@ -1179,6 +1186,11 @@ function setupAnimeHandlers() {
         searchResultCache.delete(cacheKey);
       }
       const fetchTorrentio = async () => {
+        // Skip Torrentio for adult content (usually SFW only)
+        if (isAdult) {
+          return { results: [], available: false, error: 'skipped for nsfw' };
+        }
+
         if (!kitsuContext?.kitsuId) {
           return {
             results: [],
@@ -1247,6 +1259,7 @@ function setupAnimeHandlers() {
               seasonNumber: effectiveSeasonNumber,
               partNumber: effectivePartNumber,
               episode,
+              isAdult
             });
 
             if (include) {
@@ -1308,6 +1321,7 @@ function setupAnimeHandlers() {
                   seasonNumber: effectiveSeasonNumber,
                   partNumber: effectivePartNumber,
                   episode,
+                  isAdult
                 });
 
                 if (include) {
@@ -1532,19 +1546,42 @@ async function setupAppBackend(rootPath) {
     // ==========================================================
 
     ipcMain.handle('api:all-anime-data', async () => {
-      return await withCache('allAnimeData', CACHE_TTL, async () => {
+      return await withCache('allAnimeDataV5', CACHE_TTL, async () => {
         const query = `
-          query GetTopAiringAnime {
-            Page(page: 1, perPage: 10) {
+          query GetAllHomeData {
+            topAiring: Page(page: 1, perPage: 10) {
               media(type: ANIME, status: RELEASING, sort: POPULARITY_DESC) {
-                id
-                idMal
-                title { romaji english }
-                bannerImage
-                coverImage { color extraLarge }
-                description(asHtml: false)
-                genres averageScore
-                startDate { year }
+                id idMal title { romaji english }
+                bannerImage coverImage { color extraLarge }
+                description(asHtml: false) genres averageScore startDate { year }
+              }
+            }
+            action: Page(page: 1, perPage: 12) {
+              media(type: ANIME, genre: "Action", sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { extraLarge }
+                averageScore startDate { year }
+              }
+            }
+            romance: Page(page: 1, perPage: 12) {
+              media(type: ANIME, genre: "Romance", sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { extraLarge }
+                averageScore startDate { year }
+              }
+            }
+            adventure: Page(page: 1, perPage: 12) {
+              media(type: ANIME, genre: "Adventure", sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { extraLarge }
+                averageScore startDate { year }
+              }
+            }
+            fantasy: Page(page: 1, perPage: 12) {
+              media(type: ANIME, genre: "Fantasy", sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { extraLarge }
+                averageScore startDate { year }
               }
             }
           }    
@@ -1566,18 +1603,21 @@ async function setupAppBackend(rootPath) {
         if (!anilistRes.ok || data1.errors) throw new Error("Failed to fetch data from AniList");
         if (!jikanRes.ok) throw new Error("Failed to fetch data from Jikan");
 
-        const allAnime = data1.data.Page.media;
-        const jikanData = data2.data;
+        const mapAniListMedia = (media) => ({
+          id: media.idMal,
+          title: media.title.english || media.title.romaji,
+          coverImage: media.coverImage.extraLarge,
+          score: media.averageScore,
+          year: media.startDate.year
+        });
 
-        const topAiring = allAnime.map((anime) => ({
-          id: anime.idMal,
-          title: anime.title.english || anime.title.romaji,
-          coverImage: anime.coverImage.extraLarge,
-          score: anime.averageScore,
-          year: anime.startDate.year
-        }));
+        const topAiring = data1.data.topAiring.media.map(mapAniListMedia);
+        const action = data1.data.action.media.map(mapAniListMedia);
+        const romance = data1.data.romance.media.map(mapAniListMedia);
+        const adventure = data1.data.adventure.media.map(mapAniListMedia);
+        const fantasy = data1.data.fantasy.media.map(mapAniListMedia);
 
-        const currentSeason = jikanData.slice(0, 11).map((anime) => ({
+        const currentSeason = data2.data.slice(0, 11).map((anime) => ({
           id: anime.mal_id,
           coverImage: anime.images.webp.large_image_url,
           title: anime.title_english,
@@ -1589,7 +1629,7 @@ async function setupAppBackend(rootPath) {
         }));
 
         // Whatever is returned here gets saved to electron-store
-        return { topAiring, currentSeason };
+        return { topAiring, currentSeason, action, romance, adventure, fantasy };
       });
     });
 
@@ -1647,19 +1687,63 @@ async function setupAppBackend(rootPath) {
 
 
     ipcMain.handle('api:movies', async () => {
-      return await withCache('movies', CACHE_TTL, async () => {
+      return await withCache('moviesDataV15', CACHE_TTL, async () => {
         const query = `
-          query GetPopularMovies {
-            Page(page: 1, perPage: 20) {
+          query GetMoviesPageDataExtended {
+            hero: Page(page: 1, perPage: 10) {
               media(type: ANIME, format: MOVIE, sort: POPULARITY_DESC) {
-                id
-                idMal
-                title { romaji english }
-                bannerImage
+                id idMal title { romaji english }
+                bannerImage coverImage { color extraLarge }
+                description(asHtml: false) genres averageScore format startDate { year }
+              }
+            }
+            trending: Page(page: 1, perPage: 50) {
+              media(type: ANIME, format: MOVIE, sort: TRENDING_DESC) {
+                id idMal title { romaji english }
                 coverImage { color extraLarge }
-                description(asHtml: false)
-                genres averageScore
-                startDate { year }
+                averageScore format startDate { year }
+              }
+            }
+            action: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Action", format: MOVIE, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+            romance: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Romance", format: MOVIE, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+            adventure: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Adventure", format: MOVIE, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+            fantasy: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Fantasy", format: MOVIE, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+            scifi: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Sci-Fi", format: MOVIE, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+            drama: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Drama", format: MOVIE, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
               }
             }
           }    
@@ -1674,27 +1758,318 @@ async function setupAppBackend(rootPath) {
         const data = await response.json();
         if (!response.ok || data.errors) throw new Error("Failed to fetch data from AniList");
 
-        const allMovies = data.data.Page.media;
-        return allMovies.map(anime => {
-          const description = anime.description
-            ? anime.description.replace(/<br\s*\/?>/gi, ' ').substring(0, 180) + '...'
-            : 'No description available.';
-
-          return {
+        const mapMedia = (anime, full = false) => {
+          const base = {
             id: anime.idMal,
             title: anime.title.english || anime.title.romaji,
-            bannerImage: anime.bannerImage,
             coverImage: anime.coverImage.extraLarge,
-            description,
-            genres: anime.genres,
-            year: anime.startDate.year,
+            year: anime.startDate?.year,
             score: anime.averageScore,
             color: anime.coverImage.color,
+            format: anime.format,
           };
-        });
+
+          if (full) {
+            const description = anime.description
+              ? anime.description.replace(/<br\s*\/?>/gi, ' ').substring(0, 180) + '...'
+              : 'No description available.';
+            return {
+              ...base,
+              bannerImage: anime.bannerImage,
+              description,
+              genres: anime.genres,
+            };
+          }
+          return base;
+        };
+
+        const trending = data.data.trending.media.map(a => mapMedia(a, false));
+        const action = data.data.action.media.map(a => mapMedia(a, false));
+        const romance = data.data.romance.media.map(a => mapMedia(a, false));
+        const adventure = data.data.adventure.media.map(a => mapMedia(a, false));
+        const fantasy = data.data.fantasy.media.map(a => mapMedia(a, false));
+        const scifi = data.data.scifi.media.map(a => mapMedia(a, false));
+        const drama = data.data.drama.media.map(a => mapMedia(a, false));
+
+        // De-duplication across sections
+        const seenIds = new Set();
+        const filterUnique = (list) => {
+          return list.filter(item => {
+            if (seenIds.has(item.id)) return false;
+            seenIds.add(item.id);
+            return true;
+          });
+        };
+
+        return {
+          hero: data.data.hero.media.map(a => mapMedia(a, true)),
+          trending: filterUnique(trending),
+          action: filterUnique(action),
+          romance: filterUnique(romance),
+          adventure: filterUnique(adventure),
+          fantasy: filterUnique(fantasy),
+          scifi: filterUnique(scifi),
+          drama: filterUnique(drama),
+        };
       });
     });
 
+
+    ipcMain.handle('api:tv', async () => {
+      return await withCache('tvDataV2', CACHE_TTL, async () => {
+        const query = `
+          query GetTVPageDataExtended {
+            hero: Page(page: 1, perPage: 10) {
+              media(type: ANIME, format: TV, sort: TRENDING_DESC) {
+                id idMal title { romaji english }
+                bannerImage coverImage { color extraLarge }
+                description(asHtml: false) genres averageScore format startDate { year }
+              }
+            }
+            trending: Page(page: 1, perPage: 50) {
+              media(type: ANIME, format: TV, sort: TRENDING_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+            action: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Action", format: TV, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+            romance: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Romance", format: TV, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+            adventure: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Adventure", format: TV, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+            fantasy: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Fantasy", format: TV, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+            scifi: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Sci-Fi", format: TV, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+            drama: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Drama", format: TV, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+          }    
+        `;
+        const options = {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ query }),
+        };
+
+        const response = await fetch('https://graphql.anilist.co', options);
+        const data = await response.json();
+        if (!response.ok || data.errors) throw new Error("Failed to fetch data from AniList");
+
+        const mapMedia = (anime, full = false) => {
+          const base = {
+            id: anime.idMal,
+            title: anime.title.english || anime.title.romaji,
+            coverImage: anime.coverImage.extraLarge,
+            year: anime.startDate?.year,
+            score: anime.averageScore,
+            color: anime.coverImage.color,
+            format: anime.format,
+          };
+
+          if (full) {
+            const description = anime.description
+              ? anime.description.replace(/<br\s*\/?>/gi, ' ').substring(0, 180) + '...'
+              : 'No description available.';
+            return {
+              ...base,
+              bannerImage: anime.bannerImage,
+              description,
+              genres: anime.genres,
+            };
+          }
+          return base;
+        };
+
+        const trending = data.data.trending.media.map(a => mapMedia(a, false));
+        const action = data.data.action.media.map(a => mapMedia(a, false));
+        const romance = data.data.romance.media.map(a => mapMedia(a, false));
+        const adventure = data.data.adventure.media.map(a => mapMedia(a, false));
+        const fantasy = data.data.fantasy.media.map(a => mapMedia(a, false));
+        const scifi = data.data.scifi.media.map(a => mapMedia(a, false));
+        const drama = data.data.drama.media.map(a => mapMedia(a, false));
+
+        // De-duplication across sections
+        const seenIds = new Set();
+        const filterUnique = (list) => {
+          return list.filter(item => {
+            if (seenIds.has(item.id)) return false;
+            seenIds.add(item.id);
+            return true;
+          });
+        };
+
+        return {
+          hero: data.data.hero.media.map(a => mapMedia(a, true)),
+          trending: filterUnique(trending),
+          action: filterUnique(action),
+          romance: filterUnique(romance),
+          adventure: filterUnique(adventure),
+          fantasy: filterUnique(fantasy),
+          scifi: filterUnique(scifi),
+          drama: filterUnique(drama),
+        };
+      });
+    });
+
+    ipcMain.handle('api:hentai', async () => {
+      return await withCache('hentaiDataV1', CACHE_TTL, async () => {
+        const query = `
+          query GetHentaiPageDataExtended {
+            hero: Page(page: 1, perPage: 10) {
+              media(type: ANIME, isAdult: true, sort: TRENDING_DESC) {
+                id idMal title { romaji english }
+                bannerImage coverImage { color extraLarge }
+                description(asHtml: false) genres averageScore format startDate { year }
+              }
+            }
+            trending: Page(page: 1, perPage: 50) {
+              media(type: ANIME, isAdult: true, sort: TRENDING_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+            action: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Action", isAdult: true, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+            romance: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Romance", isAdult: true, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+            adventure: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Adventure", isAdult: true, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+            fantasy: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Fantasy", isAdult: true, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+            scifi: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Sci-Fi", isAdult: true, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+            drama: Page(page: 1, perPage: 50) {
+              media(type: ANIME, genre: "Drama", isAdult: true, sort: POPULARITY_DESC) {
+                id idMal title { romaji english }
+                coverImage { color extraLarge }
+                averageScore format startDate { year }
+              }
+            }
+          }    
+        `;
+        const options = {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ query }),
+        };
+
+        const response = await fetch('https://graphql.anilist.co', options);
+        const data = await response.json();
+        if (!response.ok || data.errors) throw new Error("Failed to fetch data from AniList");
+
+        const mapMedia = (anime, full = false) => {
+          const base = {
+            id: anime.idMal,
+            title: anime.title.english || anime.title.romaji,
+            coverImage: anime.coverImage.extraLarge,
+            year: anime.startDate?.year,
+            score: anime.averageScore,
+            color: anime.coverImage.color,
+            format: anime.format,
+          };
+
+          if (full) {
+            const description = anime.description
+              ? anime.description.replace(/<br\s*\/?>/gi, ' ').substring(0, 180) + '...'
+              : 'No description available.';
+            return {
+              ...base,
+              bannerImage: anime.bannerImage,
+              description,
+              genres: anime.genres,
+            };
+          }
+          return base;
+        };
+
+        const trending = data.data.trending.media.map(a => mapMedia(a, false));
+        const action = data.data.action.media.map(a => mapMedia(a, false));
+        const romance = data.data.romance.media.map(a => mapMedia(a, false));
+        const adventure = data.data.adventure.media.map(a => mapMedia(a, false));
+        const fantasy = data.data.fantasy.media.map(a => mapMedia(a, false));
+        const scifi = data.data.scifi.media.map(a => mapMedia(a, false));
+        const drama = data.data.drama.media.map(a => mapMedia(a, false));
+
+        // De-duplication across sections
+        const seenIds = new Set();
+        const filterUnique = (list) => {
+          return list.filter(item => {
+            if (seenIds.has(item.id)) return false;
+            seenIds.add(item.id);
+            return true;
+          });
+        };
+
+        return {
+          hero: data.data.hero.media.map(a => mapMedia(a, true)),
+          trending: filterUnique(trending),
+          action: filterUnique(action),
+          romance: filterUnique(romance),
+          adventure: filterUnique(adventure),
+          fantasy: filterUnique(fantasy),
+          scifi: filterUnique(scifi),
+          drama: filterUnique(drama),
+        };
+      });
+    });
 
     ipcMain.handle('api:anime:episodes', async (event, malId, jikanPage, options = {}) => {
       if (!malId) return { success: false, error: 'missing malId' };
@@ -1775,11 +2150,14 @@ async function setupAppBackend(rootPath) {
           return 0;
         });
 
+        const isAdult = seasons.find(s => s.malId === matchedMalId)?.isAdult || seasons.some(s => s.isAdult);
+
         return {
           title: title || seasons[0]?.title || 'Unknown Title',
           rootMalId,
           matchedMalId,
           seasons,
+          isAdult,
         };
       });
     });

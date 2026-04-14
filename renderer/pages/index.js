@@ -3,8 +3,8 @@ import AnimeHero from "../components/AnimeHero";
 import AnimeHeroSkeleton from "../components/Skeletons/AnimeHeroSkeleton";
 import { AnimatePresence, motion } from "motion/react";
 import { useToast } from "../providers/toast-provider";
-import CurrentSeason from "../components/CurrentSeason";
-import CurrentSeasonSkeleton from "../components/Skeletons/CurrentSeasonSkeleton";
+import AnimeSection from "../components/AnimeSection";
+import AnimeSectionSkeleton from "../components/Skeletons/AnimeSectionSkeleton";
 
 export default function Home() {
   const { toast } = useToast();
@@ -49,8 +49,18 @@ export default function Home() {
     }
   }, [toast]);
 
+  const sections = [
+    { title: "Current Airing", data: allAnimeData.currentSeason, color: "#f6339a" },
+    { title: "Action", data: allAnimeData.action, color: "#ff6b35" },
+    { title: "Romance", data: allAnimeData.romance, color: "#ff93db" },
+    { title: "Adventure", data: allAnimeData.adventure, color: "#4ecdc4" },
+    { title: "Fantasy", data: allAnimeData.fantasy, color: "#a06cd5" },
+  ];
+
+  const isLoading = allAnimeData.topAiring === undefined;
+
   return (
-    <div className="relative w-screen min-h-screen flex flex-col z-0">
+    <div className="relative w-screen min-h-screen flex flex-col z-0 overflow-x-hidden">
       <AnimatePresence mode="wait">
         {heroLoading ? (
           <motion.div
@@ -75,26 +85,34 @@ export default function Home() {
       </AnimatePresence>
       <section className="min-h-screen w-screen p-4 text-white">
         <AnimatePresence mode="wait">
-          {allAnimeData.topAiring === undefined ? (
+          {isLoading ? (
             <motion.div
+              key="skeletons"
+              className="flex flex-col gap-5 md:gap-10"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.3 }}
             >
-              <CurrentSeasonSkeleton />
+              {sections.map((section, idx) => (
+                <AnimeSectionSkeleton key={idx} title={section.title} sectionColor={section.color} />
+              ))}
             </motion.div>
           ) : (
             <motion.div
+              key="content"
+              className="flex flex-col gap-5 md:gap-10 mb-10"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               transition={{ duration: 0.5, ease: "easeOut" }}
             >
-              <CurrentSeason currentSeason={allAnimeData.currentSeason} />
+              {sections.map((section, idx) => (
+                <AnimeSection key={idx} title={section.title} animeList={section.data} sectionColor={section.color} />
+              ))}
             </motion.div>
           )}
         </AnimatePresence>
       </section>
     </div>
   )
-}
+}

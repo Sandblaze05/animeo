@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { useRouter } from 'next/router';
 import { useRef } from 'react';
 import DetailsDisplaySkeleton from './Skeletons/DetailsDisplaySkeleton';
 import { useToast } from '../providers/toast-provider';
@@ -7,8 +8,9 @@ import { resolveAnime, getAnimeEpisodes } from '../utils/actions';
 export default function DetailsDisplay({ initialTitle, initialId }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [meta, setMeta] = useState({ title: initialTitle || '', matchedMalId: initialId ?? null, rootMalId: null, seasons: [] });
+  const [meta, setMeta] = useState({ title: initialTitle || '', matchedMalId: initialId ?? null, rootMalId: null, seasons: [], isAdult: false });
   const [activeSeasonId, setActiveSeasonId] = useState(null);
+  const router = useRouter();
   const { toast } = useToast();
   const fetchingRef = useRef(new Set());
   const fetchingMaxRef = useRef(new Map());
@@ -39,7 +41,14 @@ export default function DetailsDisplay({ initialTitle, initialId }) {
           episodesTotalCount: null, // total episodes reported by Jikan (if available)
           episodesTotalPages: null, // derived client-side pages (PAGE_SIZE)
         }));
-        setMeta(prev => ({ ...prev, title: data.title || prev.title, matchedMalId: data.matchedMalId, rootMalId: data.rootMalId, seasons: seasonsInit }));
+        setMeta(prev => ({
+          ...prev,
+          title: data.title || prev.title,
+          matchedMalId: data.matchedMalId,
+          rootMalId: data.rootMalId,
+          seasons: seasonsInit,
+          isAdult: data.isAdult === true
+        }));
         // pick default active season
         const defaultId = data.matchedMalId ?? data.rootMalId ?? (seasonsInit[0]?.malId ?? null);
         setActiveSeasonId(defaultId);
@@ -385,7 +394,11 @@ export default function DetailsDisplay({ initialTitle, initialId }) {
                     <>
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         {visible.map((ep) => (
-                          <div key={ep.mal_id} className="group relative p-5 rounded-xl bg-white/5 border border-white/10 hover:bg-[#e60076]/10 hover:border-[#e60076]/50 transition-all duration-300 cursor-pointer overflow-hidden flex flex-col justify-between min-h-35">
+                          <div 
+                            key={ep.mal_id} 
+                            onClick={() => router.push(`/watch?mal_id=${activeId}&episode=${ep.mal_id}`)}
+                            className="group relative p-5 rounded-xl bg-white/5 border border-white/10 hover:bg-[#e60076]/10 hover:border-[#e60076]/50 transition-all duration-300 cursor-pointer overflow-hidden flex flex-col justify-between min-h-35"
+                          >
                             <div className="absolute top-5 right-5 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                               <div className="w-8 h-8 rounded-full bg-[#e60076] flex items-center justify-center shadow-[0_0_15px_rgba(230,0,118,0.5)]">
                                 <svg className="w-4 h-4 text-white ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>

@@ -26,7 +26,7 @@ export default function MovieHero({ movieList }) {
   const isProgrammaticRef = useRef(false);
   const activeIndexRef = useRef(0);
 
-  const slidesToDisplay = movieList.slice(0, 7);
+  const slidesToDisplay = (movieList || []).slice(0, 7);
 
   const scrollToIndex = useCallback((index) => {
     const container = scrollContainerRef.current;
@@ -179,7 +179,9 @@ export default function MovieHero({ movieList }) {
                       {movieData.title}
                     </h1>
                     <div className="gsap-content flex flex-wrap justify-center md:justify-start items-center gap-2 text-sm">
-                      <span className="font-semibold bg-pink-500/80 px-3 py-1 rounded-full">Movie</span>
+                      <span className="font-semibold bg-pink-500/80 px-3 py-1 rounded-full">
+                        {movieData.format === 'TV' || movieData.format === 'TV_SHORT' ? 'TV Series' : 'Movie'}
+                      </span>
                       {movieData.genres.slice(0, 3).map((genre) => (
                         <span key={genre} className="bg-white/10 px-3 py-1 rounded-full backdrop-blur-sm">{genre}</span>
                       ))}

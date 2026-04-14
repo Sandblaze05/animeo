@@ -10,11 +10,11 @@ import {
 } from '../utils/actions';
 import { useToast } from '../providers/toast-provider';
 import {
-  Play, Pause, Volume2, Maximize, BarChart3,
+  Play, Pause, Volume2, Volume1, VolumeX, Maximize, BarChart3,
   ChevronRight, ExternalLink, Download, Magnet,
   Tv, List, Clock, Calendar, Signal, Loader2,
   SkipForward, SkipBack, ChevronDown, Activity,
-  Fullscreen, Minimize2
+  Fullscreen, Minimize2, RotateCcw, RotateCw
 } from 'lucide-react';
 
 const WATCH_EPISODES_COUNTS_ONLY = false;
@@ -77,7 +77,7 @@ export default function WatchPage() {
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [meta, setMeta] = useState({ title: '', rootMalId: null, matchedMalId: null, seasons: [] });
+  const [meta, setMeta] = useState({ title: '', rootMalId: null, matchedMalId: null, seasons: [], isAdult: false });
   const [activeSeasonId, setActiveSeasonId] = useState(null);
   const [activeEpisodeNum, setActiveEpisodeNum] = useState(1);
   const [episodes, setEpisodes] = useState([]);
@@ -96,6 +96,11 @@ export default function WatchPage() {
   const [playerError, setPlayerError] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [volume, setVolume] = useState(1);
+  const [isMuted, setIsMuted] = useState(false);
+  const [showCenterIcon, setShowCenterIcon] = useState(false);
+  const [centerIconType, setCenterIconType] = useState(null); // 'play', 'pause', 'rewind', 'forward'
+  
   const [playbackState, setPlaybackState] = useState({
     currentTime: 0,
     duration: 0,
@@ -163,6 +168,7 @@ export default function WatchPage() {
             episodesTotalCount: null,
             episodesTotalPages: null,
           })),
+          isAdult: resolvedData.isAdult === true,
         });
         setActiveSeasonId(requestedMalId);
       } catch (err) {
@@ -343,6 +349,7 @@ export default function WatchPage() {
           title: meta.title, season: seasonInput,
           malId: activeSeasonId,
           episode: activeEpisodeNum,
+          isAdult: meta.isAdult,
           options: { strict: true, includeLooseNumeric: false, includeNonPadded: true, excludeTerms: ['dub'] },
         };
         const searched = await searchAnimeSources(params);
@@ -520,6 +527,12 @@ export default function WatchPage() {
 
   const togglePlayPause = useCallback(async () => {
     if (!videoRef.current) return;
+    
+    // Trigger center icon
+    setCenterIconType(videoRef.current.paused ? 'play' : 'pause');
+    setShowCenterIcon(true);
+    setTimeout(() => setShowCenterIcon(false), 800);
+
     if (videoRef.current.paused) {
       try {
         await videoRef.current.play();
@@ -533,6 +546,100 @@ export default function WatchPage() {
     videoRef.current.pause();
     setIsPlaying(false);
   }, []);
+
+  const toggleMute = useCallback(() => {
+    if (!videoRef.current) return;
+    const nextMuted = !videoRef.current.muted;
+    videoRef.current.muted = nextMuted;
+    setIsMuted(nextMuted);
+  }, []);
+
+  const handleVolumeChange = useCallback((e) => {
+    if (!videoRef.current) return;
+    const nextVolume = parseFloat(e.target.value);
+    videoRef.current.volume = nextVolume;
+    setVolume(nextVolume);
+    if (nextVolume > 0 && isMuted) {
+      videoRef.current.muted = false;
+      setIsMuted(false);
+    }
+  }, [isMuted]);
+
+  const handleSkip = useCallback((seconds) => {
+    if (!videoRef.current) return;
+    
+    // Trigger center icon
+    setCenterIconType(seconds > 0 ? 'forward' : 'rewind');
+    setShowCenterIcon(true);
+    setTimeout(() => setShowCenterIcon(false), 800);
+
+    const currentTime = videoRef.current.currentTime;
+    const duration = videoRef.current.duration;
+    if (!Number.isFinite(duration)) return;
+
+    let targetTime = currentTime + seconds;
+    if (targetTime < 0) targetTime = 0;
+    if (targetTime > duration) targetTime = duration;
+
+    videoRef.current.currentTime = targetTime;
+  }, []);
+
+  // Keyboard Shortcuts
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    // Direct synchronization of volume and muted state
+    video.volume = volume;
+    video.muted = isMuted;
+  }, [volume, isMuted]);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Ignore if user is typing in a search/input (though there aren't many here)
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+      switch (e.code) {
+        case 'Space':
+          e.preventDefault();
+          togglePlayPause();
+          break;
+        case 'KeyK':
+          e.preventDefault();
+          togglePlayPause();
+          break;
+        case 'KeyM':
+          e.preventDefault();
+          toggleMute();
+          break;
+        case 'KeyJ':
+          e.preventDefault();
+          handleSkip(-10);
+          break;
+        case 'KeyL':
+          e.preventDefault();
+          handleSkip(10);
+          break;
+        case 'ArrowLeft':
+          e.preventDefault();
+          handleSkip(-10);
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          handleSkip(10);
+          break;
+        case 'KeyF':
+          e.preventDefault();
+          toggleFullscreen();
+          break;
+        default:
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [togglePlayPause, toggleMute, handleSkip, toggleFullscreen]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -762,6 +869,23 @@ export default function WatchPage() {
                   </div>
                 )}
 
+                {/* Center Control Overlays */}
+                <div 
+                  className="absolute inset-x-0 bottom-24 top-0 z-10 cursor-pointer"
+                  onClick={togglePlayPause}
+                />
+
+                {showCenterIcon && (
+                  <div className="absolute inset-0 flex items-center justify-center z-20 pointer-events-none animate-in fade-in zoom-in duration-300">
+                    <div className="w-24 h-24 rounded-full bg-black/40 backdrop-blur-md border border-white/10 flex items-center justify-center text-white">
+                      {centerIconType === 'play' && <Play size={40} fill="currentColor" />}
+                      {centerIconType === 'pause' && <Pause size={40} fill="currentColor" />}
+                      {centerIconType === 'rewind' && <RotateCcw size={40} />}
+                      {centerIconType === 'forward' && <RotateCw size={40} />}
+                    </div>
+                  </div>
+                )}
+
                 {/* Loading State */}
                 {(streamBooting || isSeeking) && (
                   <div className="absolute inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-20">
@@ -825,16 +949,53 @@ export default function WatchPage() {
                     {/* Left Controls: Play, Volume, Time */}
                     <div className="flex items-center gap-5">
                       <button
-                        onClick={togglePlayPause}
+                        onClick={() => handleSkip(-10)}
                         disabled={!streamSession?.streamingUrl}
-                        className="text-white hover:text-white/80 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                        className="relative text-white/60 hover:text-white transition-colors disabled:opacity-30 flex items-center justify-center w-8 h-8"
+                        title="Skip Back 10s"
                       >
-                        {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
+                        <RotateCcw size={26} strokeWidth={1} />
+                        <span className="absolute text-[8px] font-black mt-1">10</span>
                       </button>
 
-                      <button className="text-white/70 hover:text-white transition-colors">
-                        <Volume2 size={18} />
+                      <button
+                        onClick={togglePlayPause}
+                        disabled={!streamSession?.streamingUrl}
+                        className="text-[#ff2d9b] hover:text-[#ff71bd] transition-colors disabled:opacity-30 disabled:cursor-not-allowed mx-1"
+                      >
+                        {isPlaying ? <Pause size={28} fill="currentColor" strokeWidth={0} /> : <Play size={28} fill="currentColor" strokeWidth={0} />}
                       </button>
+
+                      <button
+                        onClick={() => handleSkip(10)}
+                        disabled={!streamSession?.streamingUrl}
+                        className="relative text-white/60 hover:text-white transition-colors disabled:opacity-30 flex items-center justify-center w-8 h-8"
+                        title="Skip Forward 10s"
+                      >
+                        <RotateCw size={26} strokeWidth={1} />
+                        <span className="absolute text-[8px] font-black mt-1">10</span>
+                      </button>
+
+                      <div className="flex items-center gap-2 group/volume ml-4">
+                        <button 
+                          onClick={toggleMute}
+                          className="text-white/70 hover:text-white transition-colors"
+                        >
+                          {isMuted || volume === 0 ? <VolumeX size={18} /> : volume < 0.5 ? <Volume1 size={18} /> : <Volume2 size={18} />}
+                        </button>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.01"
+                          value={isMuted ? 0 : volume}
+                          onChange={handleVolumeChange}
+                          style={{
+                            background: `linear-gradient(to right, #ff2d9b 0%, #ff2d9b ${(isMuted ? 0 : volume) * 100}%, rgba(255,255,255,0.2) ${(isMuted ? 0 : volume) * 100}%, rgba(255,255,255,0.2) 100%)`
+                          }}
+                          className="w-24 h-1 appearance-none rounded-full cursor-pointer transition-all duration-300"
+                        />
+                      </div>
 
                       <span className="text-xs font-mono text-white/50 tracking-wide mt-0.5">
                         {isLivePlayback

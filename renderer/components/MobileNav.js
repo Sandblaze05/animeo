@@ -10,7 +10,7 @@ const navItems = [
   { name: 'Home', href: '/', icon: Home },
   { name: 'Movies', href: '/movies', icon: Clapperboard },
   { name: 'TV', href: '/tv', icon: Tv },
-  { name: 'News', href: '/news', icon: NewspaperIcon },
+  { name: 'NSFW', href: '/news', icon: Flame },
 ]
 
 const formatDuration = (s = '') => {

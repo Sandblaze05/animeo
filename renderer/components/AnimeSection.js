@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react'
-import { X } from 'lucide-react';
-import { AnimatePresence, hover, motion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 import SeasonFlyCard from './SeasonFlyCard';
 import { useRouter } from 'next/router';
 
@@ -11,7 +10,7 @@ const colorMap = {
   3: '#96ff93'
 };
 
-const CurrentSeason = ({ currentSeason }) => {
+const AnimeSection = ({ title, animeList, sectionColor }) => {
 
   const router = useRouter();
 
@@ -37,26 +36,35 @@ const CurrentSeason = ({ currentSeason }) => {
     }
   };
 
+  if (!animeList || animeList.length === 0) return null;
+
   return (
-    <div className='flex relative w-full min-h-[50svh] mt-10 md:mt-0 border-t border-b border-pink-500'>
+    <div 
+      style={{ borderTopColor: sectionColor }}
+      className='flex relative w-full min-h-[50svh] mt-10 md:mt-0 border-t border-pink-500 last:mb-10'
+    >
       <div
+        style={{ 
+          borderColor: sectionColor, 
+          boxShadow: `5px 5px 0px ${sectionColor}`,
+          color: sectionColor 
+        }}
         className='absolute -top-2 -left-2 bg-[#0b001f] p-3 text-2xl sm:text-4xl 
-        font-extrabold tracking-widest text-[#f6339a] border border-pink-500
-        [box-shadow:5px_5px_0px_#f6339a]'
+        font-extrabold tracking-widest border z-30'
       >
-        <h1>{"Current Airing"}</h1>
+        <h1>{title}</h1>
       </div>
 
       <div className='flex items-center justify-start px-10 py-5 min-w-full overflow-x-auto overflow-y-hidden mt-14 scrollbar-hide scroll-smooth'>
         <div className='flex gap-15'>
-          {currentSeason.map((anime, idx) => (
+          {animeList.map((anime, idx) => (
             <div
               key={idx}
               ref={(el) => (cardRefs.current[idx] = el)}
               onMouseEnter={() => handleMouseEnter(idx)}
               onMouseLeave={() => setHoveredIndex(null)}
               onClick={(e) => { e.stopPropagation(); router.push(`/anime?id=${anime.id}&title=${anime.title}`); }}
-              className='flex relative h-73 w-53 transition-all duration-800 z-10'
+              className='flex relative h-73 w-53 transition-all duration-800 z-10 cursor-pointer'
               style={{ 
                 filter: `${hoveredIndex !== null && hoveredIndex !== idx ? 'brightness(50%)' : 'brightness(100%)'}`,
                 zIndex: hoveredIndex === idx ? 50 : 10
@@ -89,4 +97,4 @@ const CurrentSeason = ({ currentSeason }) => {
   )
 }
 
-export default CurrentSeason
+export default AnimeSection

@@ -74,6 +74,16 @@ contextBridge.exposeInMainWorld('animeo', {
       if (r && r.success) return r.result;
       throw new Error(r?.error || 'API error: movies');
     },
+    tv: async () => {
+      const r = await ipcRenderer.invoke('api:tv');
+      if (r && r.success) return r.result;
+      throw new Error(r?.error || 'API error: tv');
+    },
+    hentai: async () => {
+      const r = await ipcRenderer.invoke('api:hentai');
+      if (r && r.success) return r.result;
+      throw new Error(r?.error || 'API error: hentai');
+    },
     animeEpisodes: async (malId, jikanPage, options) => {
       const r = await ipcRenderer.invoke('api:anime:episodes', malId, jikanPage, options);
       if (r && r.success) return r.result;

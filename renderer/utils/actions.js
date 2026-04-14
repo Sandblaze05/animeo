@@ -82,6 +82,14 @@ export async function getMovies() {
   return await window.animeo.api.movies();
 }
 
+export async function getTV() {
+  return await window.animeo.api.tv();
+}
+
+export async function getHentai() {
+  return await window.animeo.api.hentai();
+}
+
 export async function resolveAnime(body) {
   return await window.animeo.api.animeResolve(body);
 }
